@@ -108,6 +108,24 @@
                 </StackPanel>
             </Border>
 
+            <!-- ===== 签到时间（自定义云端每日运行时刻） ===== -->
+            <Border Classes="card" Margin="0,10,0,0">
+                <StackPanel Spacing="8">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock Grid.Column="0" Text="签到时间" Classes="card-title" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="北京时间 · 部署时自动应用" FontSize="11" Foreground="{DynamicResource TextMutedBrush}" />
+                    </Grid>
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <TextBox Text="{Binding CloudCheckinTime}" Width="90" Height="34" VerticalContentAlignment="Center"
+                                 FontFamily="Consolas" Watermark="08:00" />
+                        <Button Classes="btn" Content="应用到云端" Command="{Binding ApplyCloudTimeCommand}"
+                                Height="34" Padding="14,0"
+                                HorizontalContentAlignment="Center" VerticalContentAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock Text="格式 HH:mm（北京时间），改完点「应用到云端」即改写 fork 的 checkin.yml 定时，无需重新部署；GitHub 定时调度通常有 ±15 分钟左右延迟。" FontSize="11" Foreground="{DynamicResource TextMutedBrush}" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
             <!-- ===== Deploy Log（底部部署操作日志，固定可观高度，内部自带滚动） ===== -->
             <Border Classes="card" Margin="0,10,0,0">
                 <StackPanel Spacing="8">

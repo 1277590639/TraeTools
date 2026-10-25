@@ -413,6 +413,86 @@ public class GitHubApiClient
         return false;
     }
 
+    /// <summary>
+    /// 把北京时间 HH:mm 换算为 UTC cron 表达式（GitHub Actions schedule 用 UTC）。
+    /// "08:00" → "0 0 * * *"；"21:30" → "30 13 * * *"。非法输入返回 null。
+    /// </summary>
+    public static string? CronFromBeijingTime(string? beijingHHmm)
+    {
+        if (string.IsNullOrWhiteSpace(beijingHHmm)) return null;
+        var parts = beijingHHmm.Trim().Split(':');
+        if (parts.Length != 2) return null;
+        if (!int.TryParse(parts[0], out var h) || !int.TryParse(parts[1], out var m)) return null;
+        if (h is < 0 or > 23 || m is < 0 or > 59) return null;
+        int utcH = (h - 8 + 24) % 24;
+        return $"{m} {utcH} * * *";
+    }
+
+    /// <summary>
+    /// 更新 fork 中 checkin.yml 的定时（cron）。流程：读取现有文件（拿 sha）→
+    /// 替换第一条 cron 行 → Contents API 写回。返回是否成功。
+    /// </summary>
+    public async Task<bool> UpdateWorkflowCronAsync(string token, string login, string cron)
+    {
+        try
+        {
+            var path = $"/repos/{login}/{SourceRepo}/contents/{WorkflowPath}";
+            using var get = await SendApiAsync(HttpMethod.Get, path + "?ref=main", token);
+            if (!get.IsSuccessStatusCode)
+            {
+                LastError = $"读取 checkin.yml 失败：HTTP {(int)get.StatusCode}";
+                return false;
+            }
+            var getJson = await get.Content.ReadAsStringAsync();
+            string sha, contentB64;
+            using (var doc = System.Text.Json.JsonDocument.Parse(getJson))
+            {
+                if (!doc.RootElement.TryGetProperty("sha", out var shaEl) ||
+                    !doc.RootElement.TryGetProperty("content", out var cEl) ||
+                    shaEl.ValueKind != JsonValueKind.String || cEl.ValueKind != JsonValueKind.String)
+                {
+                    LastError = "checkin.yml 响应缺少 sha/content";
+                    return false;
+                }
+                sha = shaEl.GetString()!;
+                contentB64 = cEl.GetString()!.Replace("\n", "");
+            }
+
+            string yml;
+            try { yml = Encoding.UTF8.GetString(Convert.FromBase64String(contentB64)); }
+            catch (Exception ex) { LastError = "checkin.yml 内容解码失败：" + ex.Message; return false; }
+
+            var regex = new System.Text.RegularExpressions.Regex(@"(-\s+cron:\s*"")[^""]*("")");
+            if (!regex.IsMatch(yml))
+            {
+                LastError = "checkin.yml 中未找到 cron 行，无法更新时间";
+                return false;
+            }
+            var newYml = regex.Replace(yml, $"${{1}}{cron}${{2}}", 1);
+            if (newYml == yml)
+            {
+                LastError = "";   // 内容本就一致，视为成功（幂等）
+                return true;
+            }
+
+            var payload = AppJson.Serialize(new GitHubContentUpdatePayload
+            {
+                Message = "chore: 调整云端签到时间至 " + cron + " (UTC)",
+                Content = Convert.ToBase64String(Encoding.UTF8.GetBytes(newYml)),
+                Sha = sha,
+            });
+            using var put = await SendApiAsync(HttpMethod.Put, path, token, payload);
+            if (put.IsSuccessStatusCode) return true;
+            LastError = $"写入 checkin.yml 失败：HTTP {(int)put.StatusCode}";
+            return false;
+        }
+        catch (Exception ex)
+        {
+            LastError = ex.Message;
+            return false;
+        }
+    }
+
     /// <summary>手动触发一次 workflow（用于立即验证）。</summary>
     public async Task<bool> DispatchWorkflowAsync(string token, string login, long workflowId)
     {

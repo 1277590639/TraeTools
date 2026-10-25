@@ -48,6 +48,12 @@ public class AppConfig
     /// <summary>关闭主窗口时是否最小化到系统托盘（托盘驻留）。</summary>
     public bool MinimizeToTray { get; set; } = true;
 
+    /// <summary>
+    /// 云端签到每日运行时间（北京时间 HH:mm）。部署/「应用到云端」时改写 fork 中
+    /// checkin.yml 的 cron（换算为 UTC）。空或非法值按默认 08:00 处理。
+    /// </summary>
+    public string CloudCheckinTime { get; set; } = "08:00";
+
     // ==================== 以下为本次 PR 追加的配置项 ====================
     // 注意：本类的落盘走 CloneForStorage 白名单（见该方法注释），
     // 因此**每新增一个属性都必须同步加进 CloneForStorage 与 UnsealSecrets**，
@@ -285,6 +291,7 @@ public class AppConfig
             EulaAccepted = EulaAccepted,
             StarAskedAfterDeploy = StarAskedAfterDeploy,
             MinimizeToTray = MinimizeToTray,
+            CloudCheckinTime = CloudCheckinTime,
             // ===== 本次 PR 追加项 =====
             DarkMode = DarkMode,
             ThemeMode = ThemeMode,

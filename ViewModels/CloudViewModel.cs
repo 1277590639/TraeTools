@@ -57,6 +57,10 @@ public partial class CloudViewModel : ViewModelBase
     [ObservableProperty]
     private bool _isBusy;
 
+    /// <summary>云端签到每日运行时间（北京时间 HH:mm）。改写 fork 中 checkin.yml 的 cron。</summary>
+    [ObservableProperty]
+    private string _cloudCheckinTime = "08:00";
+
     /// <summary>待轮询的设备码（用于「重新打开授权网页」）。</summary>
     private GitHubDeviceCode? _pendingCode;
 
@@ -122,11 +126,13 @@ public partial class CloudViewModel : ViewModelBase
             if (!status.IsAuthorized) { ClearCloudAuth("GitHub 授权已失效，请重新授权"); return; }
 
             GitHubUser = login;
+            // 同步「云端签到时间」设置到界面（默认 08:00；用户可改后单独应用或随部署生效）
+            if (!string.IsNullOrWhiteSpace(cfg.CloudCheckinTime)) CloudCheckinTime = cfg.CloudCheckinTime;
             if (status.IsDeployed)
             {
                 StateText = status.DeployedAccountCount >= 2
-                    ? $"已部署完成（{status.DeployedAccountCount} 个账号），云端每天北京时间 8:00 自动签到"
-                    : "已部署完成（1 个账号），云端每天北京时间 8:00 自动签到";
+                    ? $"已部署完成（{status.DeployedAccountCount} 个账号），云端每天北京时间 {CloudCheckinTime} 自动签到"
+                    : $"已部署完成（1 个账号），云端每天北京时间 {CloudCheckinTime} 自动签到";
                 ActionButtonText = "重新部署";
                 LastRun = await TryGetLastRunAsync(token, login);
             }
@@ -470,6 +476,9 @@ public partial class CloudViewModel : ViewModelBase
             Steps[2].Status = "ok";
             AppendLog("workflow 已启用");
 
+            // 应用自定义签到时间（北京时间 → UTC cron，改写 fork 的 checkin.yml）
+            await ApplyCronInternalAsync(token, login);
+
             AppendLog("正在触发一次验证运行…");
             if (!await _ghApi.DispatchWorkflowAsync(token, login, wfId)) { HandleDeployFailure(); return; }
 
@@ -484,8 +493,8 @@ public partial class CloudViewModel : ViewModelBase
 
             if (conclusion == "success")
             {
-                AppendLog($"部署成功！{enabled.Count} 个账号已就绪，GitHub 将每天北京时间 8:00 自动签到。");
-                StateText = "已部署完成（" + enabled.Count + " 个账号），云端每天自动签到";
+                AppendLog($"部署成功！{enabled.Count} 个账号已就绪，GitHub 将每天北京时间 {CloudCheckinTime} 自动签到。");
+                StateText = $"已部署完成（{enabled.Count} 个账号），云端每天 {CloudCheckinTime} 自动签到";
                 ActionButtonText = "重新部署";
             }
             else if (string.IsNullOrEmpty(conclusion))
@@ -542,6 +551,75 @@ public partial class CloudViewModel : ViewModelBase
             AppendLog(string.IsNullOrEmpty(err) ? "部署失败，请重试" : err);
         }
         RefreshCloudState(isDeployFlow: false);
+    }
+
+    /// <summary>
+    /// 应用自定义签到时间（北京时间 HH:mm → UTC cron，改写 fork 的 checkin.yml）。
+    /// 部署流程与「应用到云端」按钮共用；失败不阻断部署（沿用源仓库默认 08:00）。
+    /// </summary>
+    private async Task ApplyCronInternalAsync(string token, string login)
+    {
+        var cron = GitHubApiClient.CronFromBeijingTime(CloudCheckinTime);
+        if (cron == null)
+        {
+            AppendLog($"签到时间「{CloudCheckinTime}」格式无效（应为 HH:mm，如 08:30），沿用默认 08:00");
+            CloudCheckinTime = "08:00";
+            cron = "0 0 * * *";
+        }
+        AppendLog($"正在设置云端签到时间为北京时间 {CloudCheckinTime}（UTC cron: {cron}）…");
+        if (await _ghApi.UpdateWorkflowCronAsync(token, login, cron))
+        {
+            var cfg = MainViewModel.AppConfig;
+            if (cfg != null && cfg.CloudCheckinTime != CloudCheckinTime)
+            {
+                cfg.CloudCheckinTime = CloudCheckinTime;
+                try { cfg.Save(); } catch { /* 忽略 */ }
+            }
+            AppendLog($"云端签到时间已生效：每天北京时间 {CloudCheckinTime}（GitHub 定时调度通常有 ±15 分钟左右延迟，属正常现象）");
+        }
+        else
+        {
+            AppendLog("设置签到时间失败：" + _ghApi.LastError + "（部署继续，云端沿用默认 08:00）");
+        }
+    }
+
+    /// <summary>「应用到云端」按钮：只更新云端签到时间，无需重新部署。</summary>
+    [RelayCommand]
+    private async Task ApplyCloudTime()
+    {
+        if (IsBusy) return;
+        var cfg = MainViewModel.AppConfig;
+        if (cfg == null || string.IsNullOrEmpty(cfg.GitHubToken))
+        {
+            AppendLog("尚未授权 GitHub，请先授权后再设置签到时间");
+            return;
+        }
+        if (GitHubApiClient.CronFromBeijingTime(CloudCheckinTime) == null)
+        {
+            AppendLog($"时间「{CloudCheckinTime}」格式无效，请输入 HH:mm（如 08:30）");
+            return;
+        }
+        IsBusy = true;
+        try
+        {
+            string token = cfg.GitHubToken;
+            string login = cfg.GitHubLogin ?? GitHubUser;
+            if (string.IsNullOrEmpty(login))
+            {
+                login = await _ghApi.GetLoginAsync(token) ?? "";
+                if (string.IsNullOrEmpty(login)) { ClearCloudAuth("GitHub 授权已失效，请重新授权"); return; }
+            }
+            await ApplyCronInternalAsync(token, login);
+            await RefreshDeploymentStateAsync();
+        }
+        catch (Exception ex)
+        {
+            AppendLog("设置签到时间异常：" + ex.Message);
+        }
+        finally
+        {
+            IsBusy = false;
+        }
     }
 
     /// <summary>
