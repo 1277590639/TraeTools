@@ -20,12 +20,14 @@ public partial class InputWindow : Window
     /// <param name="title">窗口标题。</param>
     /// <param name="message">提示文案。</param>
     /// <param name="placeholder">输入框占位符。</param>
-    public InputWindow(string title, string message, string placeholder)
+    /// <param name="defaultValue">输入框预填值（可选，用于自动检测到的建议名称）。</param>
+    public InputWindow(string title, string message, string placeholder, string? defaultValue = null)
         : this()
     {
         TitleText.Text = title;
         MessageText.Text = message;
         InputBox.PlaceholderText = placeholder;
+        if (!string.IsNullOrEmpty(defaultValue)) InputBox.Text = defaultValue;
     }
 
     private void OnOkClick(object? sender, RoutedEventArgs e)

@@ -34,6 +34,9 @@
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
                     <TextBlock Text="{Binding StatusMessage}" FontSize="11" Foreground="{DynamicResource TextMutedBrush}" VerticalAlignment="Center" />
+                    <TextBlock Text="范围" FontSize="12" Foreground="{DynamicResource TextMutedBrush}" VerticalAlignment="Center" />
+                    <ComboBox SelectedItem="{Binding FetchDays}" ItemsSource="{Binding FetchDayOptions}" Width="90"
+                              HorizontalContentAlignment="Center" />
                     <Button Classes="btn-primary" Content="拉取用量" Command="{Binding RefreshCommand}"
                             IsEnabled="{Binding !IsLoading}" />
                 </StackPanel>

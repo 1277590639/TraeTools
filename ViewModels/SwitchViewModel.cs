@@ -491,11 +491,35 @@ public partial class SwitchViewModel : ViewModelBase
         string account = SelectedAccount?.Name ?? "";
         if (string.IsNullOrEmpty(account))
         {
+            // 自动检测：读当前客户端登录态，JWT uid 与应用账号匹配时预填该账号名
+            string suggested = "";
+            try
+            {
+                var import = await TraeTools.Services.Login.LocalClientImporter.TryImportAsync();
+                var uid = TraeCheckin.TokenUtils.ParseAccountUid(import.Token);
+                var match = string.IsNullOrEmpty(uid) ? null
+                    : MainViewModel.AppConfig?.Accounts.FirstOrDefault(a => a.AccountUid == uid);
+                if (match != null)
+                {
+                    suggested = match.Name ?? "";
+                    AppendLog($"检测到当前客户端登录：{suggested}（已匹配应用账号），直接确认即可建档");
+                }
+                else if (!string.IsNullOrEmpty(import.Token))
+                {
+                    AppendLog("检测到当前客户端已登录，但与现有应用账号不匹配；请为这份登录态命名");
+                }
+                else
+                {
+                    AppendLog("未检测到客户端登录态：请先在 Trae 客户端登录后再建档，或手动输入名称");
+                }
+            }
+            catch { /* 检测失败则退回手动输入 */ }
+
             var owner = UiHost.MainWindow;
             var dlg = new InputWindow(
                 "建档新账号",
-                "账号列表为空。\n请为当前登录的 Trae 客户输入一个账号名称（用于区分多个账号的登录态备份，如「主号 / 小号」）。已删除的账号如需恢复，用原来的名称即可。",
-                "如：主号 / 小号");
+                "请为当前登录的 Trae 客户输入一个账号名称（用于区分多个账号的登录态备份，如「主号 / 小号」）。已删除的账号如需恢复，用原来的名称即可。",
+                "如：主号 / 小号", suggested);
             string? name = owner != null ? await dlg.ShowDialog<string>(owner) : null;
             if (string.IsNullOrWhiteSpace(name))
             {

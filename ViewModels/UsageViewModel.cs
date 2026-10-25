@@ -60,7 +60,12 @@ public partial class UsageViewModel : ViewModelBase
     public ObservableCollection<ModelUsageStat> ModelStats { get; } = new();
 
     private const int MaxSessionsShown = 500;   // 列表展示上限（汇总仍按全量）
-    private const int FetchDays = 7;
+    /// <summary>可选的拉取时间范围（天）。实测 usage_type=[7] 时近 7 天常为空，默认放宽到 30 天。</summary>
+    public int[] FetchDayOptions { get; } = { 7, 30, 90 };
+
+    [ObservableProperty]
+    private int _fetchDays = 30;
+
     private const int ExpireWarnDays = 7;       // 提前多少天提醒积分过期
 
     public UsageViewModel()
@@ -138,7 +143,7 @@ public partial class UsageViewModel : ViewModelBase
             AccountHelpers.AppLog("usage", accName, $"拉取完成：{fetched.Count} 条新会话");
             StatusMessage = fetched.Count > 0
                 ? $"已同步 {fetched.Count} 条新会话（近 {FetchDays} 天）"
-                : "没有新增会话";
+                : $"近 {FetchDays} 天没有用量记录（接口连接正常；可在上方把范围调大到 90 天再试）";
         }
         catch (Exception ex)
         {
