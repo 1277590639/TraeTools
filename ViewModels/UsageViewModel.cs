@@ -239,6 +239,7 @@ public partial class UsageViewModel : ViewModelBase
             return;
         }
         RefreshExpiryLogIfDue();   // 页面进入时每天自动扫一次积分过期（手动按钮不限）
+        _ = RefreshExpiringForCurrentAccountAsync(acc);   // 切账号后顶部提醒立即更新，无需点「拉取用量」
         CurrentAccount = string.IsNullOrEmpty(acc.Name)
             ? $"账号@{(acc.AccountUid ?? acc.Id.Substring(0, 6))}"
             : acc.Name;
@@ -289,15 +290,7 @@ public partial class UsageViewModel : ViewModelBase
             LoadFromStore(acc.Id);
 
             // 积分快过期提醒（当前持有包的剩余/到期；expired_ents 是已过期历史，语义不同）
-            var curPacks = await usageApi.GetCurrentEntitlementsAsync(acc.Token ?? "", acc.Session);
-            UpdateExpiring(curPacks
-                .Where(p => p.Remaining > 0)
-                .Select(p => new ExpiredEnt
-                {
-                    Name = p.Name,
-                    CreditsLimit = p.Remaining,
-                    ExpireTimeMs = p.EndTimeSec * 1000,
-                }).ToList());
+            await RefreshExpiringForCurrentAccountAsync(acc);
 
             AccountHelpers.AppLog("usage", accName, $"拉取完成：{fetched.Count} 条新会话");
             StatusMessage = fetched.Count > 0
@@ -313,6 +306,33 @@ public partial class UsageViewModel : ViewModelBase
         {
             IsLoading = false;
         }
+    }
+
+    /// <summary>
+    /// 刷新「积分快过期提醒」（当前生效账号）：切账号/进页面/拉取用量后都会调用，
+    /// 只发 1 个请求，切换账号后无需点「拉取用量」也能更新。
+    /// </summary>
+    public async Task RefreshExpiringForCurrentAccountAsync(TraeCheckin.TraeAccount? acc = null)
+    {
+        try
+        {
+            var cfg = MainViewModel.AppConfig;
+            acc ??= cfg?.Accounts.FirstOrDefault(a => a.Id == cfg.ActiveAccountId)
+                    ?? cfg?.Accounts.FirstOrDefault();
+            if (acc == null || string.IsNullOrEmpty(acc.Token)) { HasExpiring = false; return; }
+            var usageApi = new TraeTools.Services.Usage.TraeUsageClient(AccountHelpers.ResolveProxy(acc));
+            if (!await AccountHelpers.EnsureValidTokenAsync(acc) || string.IsNullOrEmpty(acc.Token)) { HasExpiring = false; return; }
+            var packs = await usageApi.GetCurrentEntitlementsAsync(acc.Token, acc.Session);
+            UpdateExpiring(packs
+                .Where(p => p.Remaining > 0)
+                .Select(p => new ExpiredEnt
+                {
+                    Name = p.Name,
+                    CreditsLimit = p.Remaining,
+                    ExpireTimeMs = p.EndTimeSec * 1000,
+                }).ToList());
+        }
+        catch { HasExpiring = false; /* 提醒失败不影响主流程 */ }
     }
 
     /// <summary>从本地读取该账号记录并重建列表 + 汇总 + 模型分布。</summary>
@@ -378,7 +398,7 @@ public partial class UsageViewModel : ViewModelBase
         ExpiringItems.Clear();
         var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         double total = 0;
-        foreach (var e in expired)
+        foreach (var e in expired.OrderBy(e => e.ExpireTimeMs))
         {
             if (e.ExpireTimeMs <= nowMs) continue;          // 已过期的不提醒
             if (e.CreditsLimit <= 0) continue;
