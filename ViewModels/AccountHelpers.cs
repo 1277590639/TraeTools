@@ -1,13 +1,42 @@
 using System;
+using System.Collections.Concurrent;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using TraeCheckin;
 
 namespace TraeTools.ViewModels;
 
-/// <summary>账号相关跨 VM 共享工具（DeviceId 补发 / Token 会话换新）。</summary>
+/// <summary>账号相关跨 VM 共享工具（DeviceId 补发 / Token 会话换新 / 签到风控重试）。</summary>
 public static class AccountHelpers
 {
+    // ==================== Token 校验/换新的并发治理 ====================
+    // 背景：仪表盘、设置页、签到批处理、用量页会并发对同一账号调 EnsureValidTokenAsync，
+    // 每次 = 1 次 status 探测 + 可能的 GetUserToken 换新。曾经同一账号在一秒内被并发
+    // 探测/换新 5+ 次，触发 Trae 接口限流（1001 / GetUserToken 返回异常），日志里
+    // "Session 换新 Token 失败（返回为空）" 刷屏。此处做三层收敛：
+    //   1) 校验结果缓存：短时间内的重复校验直接复用结果；
+    //   2) 换新限流：同一账号换新失败后 45 秒内不再重试；
+    //   3) 并发闸门：同一账号的换新同一时刻只允许一个在跑，后来者等待并复用结果。
+
+    /// <summary>校验成功结果缓存时长（期间不再打 status 探测）。</summary>
+    private static readonly TimeSpan StatusCacheTtl = TimeSpan.FromSeconds(90);
+    /// <summary>换新失败后的冷却时长（期间快速失败，不 hammer 接口）。</summary>
+    private static readonly TimeSpan RenewalCooldown = TimeSpan.FromSeconds(45);
+
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> TokenGates = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, DateTime> LastRenewalAttempt = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, DateTime> ValidUntil = new(StringComparer.Ordinal);
+
+    /// <summary>标记账号 token 在此刻验证通过（缓存 StatusCacheTtl）。</summary>
+    private static void MarkTokenValid(string accountId) => ValidUntil[accountId] = DateTime.Now.Add(StatusCacheTtl);
+
+    /// <summary>供外部（如快签成功）确认 token 有效，随后一小段时间内不再重复探测。</summary>
+    public static void MarkTokenValidPublic(string accountId) => MarkTokenValid(accountId);
+
+    /// <summary>登录态变化（重新登录/换新失败）后调用，避免缓存掩盖真实状态。</summary>
+    public static void InvalidateTokenCache(string accountId) => ValidUntil.TryRemove(accountId, out _);
+
     /// <summary>缺号则生成不与其它账号重复的 16 位数字设备号（风控要求，多账号共用会触发 9074）。</summary>
     public static void EnsureDeviceId(TraeAccount acc)
     {
@@ -17,10 +46,16 @@ public static class AccountHelpers
             StringComparer.Ordinal);
         // 已有且不与其它账号重复 → 保持不动（幂等）；为空或与别人相同（手工填错）→ 换发独立新号
         if (!string.IsNullOrWhiteSpace(acc.DeviceId) && !used.Contains(acc.DeviceId)) return;
+        acc.DeviceId = NewDeviceId(used);
+    }
+
+    /// <summary>生成一个不在 used 集合内的 16 位数字设备号。</summary>
+    private static string NewDeviceId(System.Collections.Generic.HashSet<string> used)
+    {
         string id;
         do { id = Random.Shared.NextInt64(1_000_000_000_000_000L, 10_000_000_000_000_000L).ToString(); }
         while (used.Contains(id));
-        acc.DeviceId = id;
+        return id;
     }
 
     /// <summary>校验/换新 Token：失效时用 X-Cloudide-Session 静默换新并保存；返回是否持有可用 token。</summary>
@@ -31,33 +66,112 @@ public static class AccountHelpers
         var name = string.IsNullOrEmpty(acc.Name) ? (acc.Id.Length > 6 ? acc.Id[..6] : acc.Id) : acc.Name!;
         if (cfg == null || api == null) return false;
 
-        if (!string.IsNullOrEmpty(acc.Token))
-        {
-            var st = await api.GetStatusAsync(acc.Token, acc.DeviceId);
-            if (st != null && st.code == 0) return true;
-            CheckinLog(name, $"Token 已失效（status code={st?.code ?? -1}），尝试 Session 换新");
-        }
+        // 1) 校验结果缓存：最近刚验证过就直接放行，省掉一次 status 探测
+        if (ValidUntil.TryGetValue(acc.Id, out var until) && until > DateTime.Now)
+            return true;
 
-        // token 失效：用会话 Cookie 静默换新（无需重新登录）
-        if (!string.IsNullOrEmpty(acc.Session))
+        // 2) 并发闸门：同一账号同一时刻只走一个"探测+换新"流程，其余等待后复用缓存
+        var gate = TokenGates.GetOrAdd(acc.Id, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync();
+        try
         {
-            var renewed = await api.GetUserTokenAsync(acc.Session);
-            if (!string.IsNullOrEmpty(renewed))
-            {
-                acc.Token = renewed;
-                acc.AccountUid = TokenUtils.ParseAccountUid(renewed);
-                acc.TokenUpdatedAt = DateTime.Now;
-                try { cfg.Save(); } catch { /* 忽略 */ }
-                CheckinLog(name, $"Session 换新 Token 成功，新 AccountUid={acc.AccountUid}");
+            // 双检：排队期间可能已被前一个等待者验证通过
+            if (ValidUntil.TryGetValue(acc.Id, out until) && until > DateTime.Now)
                 return true;
+
+            // 换新专用客户端：隔离 LastError，避免与签到/仪表盘的并发调用互相覆盖错误文本
+            var renewApi = new TraeApiClient();
+
+            if (!string.IsNullOrEmpty(acc.Token))
+            {
+                var st = await renewApi.GetStatusAsync(acc.Token, acc.DeviceId);
+                if (st != null && st.code == 0)
+                {
+                    MarkTokenValid(acc.Id);
+                    return true;
+                }
+                CheckinLog(name, $"Token 已失效（status code={st?.code ?? -1}），尝试 Session 换新");
             }
-            CheckinLog(name, "Session 换新 Token 失败（返回为空）");
+
+            // token 失效：用会话 Cookie 静默换新（无需重新登录）
+            if (!string.IsNullOrEmpty(acc.Session))
+            {
+                // 3) 换新限流：刚失败过就别再 hammer 接口（失败原因多为限流，越打越失败）
+                if (LastRenewalAttempt.TryGetValue(acc.Id, out var last)
+                    && DateTime.Now - last < RenewalCooldown)
+                {
+                    CheckinLog(name, $"距上次 Session 换新仅 {(int)(DateTime.Now - last).TotalSeconds}s（此前失败：{renewApi.LastError ?? "原因未知"}），暂缓重试");
+                    return false;
+                }
+                LastRenewalAttempt[acc.Id] = DateTime.Now;
+
+                var renewed = await renewApi.GetUserTokenAsync(acc.Session);
+                if (!string.IsNullOrEmpty(renewed))
+                {
+                    var uid = TokenUtils.ParseAccountUid(renewed);
+                    // 防污染：换新出来的 token 归属与账号记录的 AccountUid 不符时拒绝采用
+                    if (!string.IsNullOrEmpty(acc.AccountUid) && !string.IsNullOrEmpty(uid) && uid != acc.AccountUid)
+                    {
+                        CheckinLog(name, $"Session 换新出的 Token 属于其他用户（uid={uid}，期望 {acc.AccountUid}），已拒绝，Session 可能已串号");
+                        return false;
+                    }
+                    acc.Token = renewed;
+                    acc.AccountUid = uid ?? acc.AccountUid;
+                    acc.TokenUpdatedAt = DateTime.Now;
+                    try { cfg.Save(); } catch { /* 忽略 */ }
+                    MarkTokenValid(acc.Id);
+                    CheckinLog(name, $"Session 换新 Token 成功，新 AccountUid={acc.AccountUid}");
+                    return true;
+                }
+                CheckinLog(name, $"Session 换新 Token 失败（{renewApi.LastError ?? "返回为空"}）");
+            }
+            else
+            {
+                CheckinLog(name, "Token 失效且无 Session，无法自动换新（请重新登录；重新登录成功后会同时保存 Session）");
+            }
+            return false;
         }
-        else
+        finally
         {
-            CheckinLog(name, "Token 失效且无 Session，无法自动换新");
+            gate.Release();
         }
-        return false;
+    }
+
+    // ==================== 签到 9074 风控重试（对齐 checkin.py 策略） ====================
+    // checkin.py：命中 9074「当前参与用户太多」= 设备号被风控标记 → 换全新设备号重试（最多 5 次）。
+    // C# 版此前只会失败一次就放弃，这是"没法签到"的直接原因之一。
+
+    /// <summary>9074 重试上限（与 checkin.py 一致：首次 + 4 次换号重试）。</summary>
+    private const int ClaimRiskRetries = 4;
+
+    /// <summary>
+    /// 带风控重试的签到：命中 9074 时自动换新设备号重试，成功后把可用设备号持久化。
+    /// 返回与 ClaimAsync 相同的结果对象；全部重试后仍失败则返回最后一次的结果。
+    /// </summary>
+    public static async Task<TraeCheckin.CheckinStatus?> ClaimWithRiskRetryAsync(
+        TraeCheckin.TraeApiClient api, TraeAccount acc, string displayName)
+    {
+        EnsureDeviceId(acc);
+        var result = await api.ClaimAsync(acc.Token ?? "", acc.DeviceId);
+        int attempt = 1;
+        while (result != null && result.code == 9074 && attempt <= ClaimRiskRetries)
+        {
+            var used = new System.Collections.Generic.HashSet<string>(
+                MainViewModel.AppConfig?.Accounts.Where(a => a.Id != acc.Id).Select(a => a.DeviceId)
+                   .Where(d => !string.IsNullOrWhiteSpace(d)) ?? Array.Empty<string>(),
+                StringComparer.Ordinal);
+            acc.DeviceId = NewDeviceId(used);
+            attempt++;
+            CheckinLog(displayName, $"命中风控 9074，换新设备号重试（第 {attempt - 1}/{ClaimRiskRetries} 次）DeviceId={acc.DeviceId}");
+            await Task.Delay(Random.Shared.Next(800, 1500));
+            result = await api.ClaimAsync(acc.Token ?? "", acc.DeviceId);
+        }
+        // 换出来的设备号能签到 → 持久化（下次启动继续用；若以后再被标记，重试机制会再换）
+        if (result is { code: 0 } && !string.IsNullOrEmpty(acc.DeviceId))
+        {
+            try { MainViewModel.AppConfig?.Save(); } catch { /* 忽略 */ }
+        }
+        return result;
     }
 
     /// <summary>

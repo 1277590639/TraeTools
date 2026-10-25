@@ -19,3 +19,5 @@ Thumbs.db
 
 # Publish output
 publish/
+# ZCode local tool config
+.zcode/

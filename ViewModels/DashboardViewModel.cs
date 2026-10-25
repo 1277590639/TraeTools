@@ -477,8 +477,9 @@ public partial class DashboardViewModel : ViewModelBase
         try
         {
             var cfg = MainViewModel.AppConfig;
-            var api = MainViewModel.CheckinApi;
-            if (cfg == null || api == null) return;
+            if (cfg == null) return;
+            // 独立 API 实例：LastError 不与并发的其他流程（签到/刷新/换新）互相覆盖
+            var api = new TraeApiClient();
 
             var acc = cfg.Accounts.FirstOrDefault(a => a.Id == cfg.ActiveAccountId)
                       ?? cfg.Accounts.FirstOrDefault();
@@ -521,7 +522,6 @@ public partial class DashboardViewModel : ViewModelBase
             PopulateAccounts();
 
             var cfg = MainViewModel.AppConfig;
-            var api = MainViewModel.CheckinApi;
             var acc = cfg?.Accounts.FirstOrDefault(a => a.Id == cfg.ActiveAccountId)
                       ?? cfg?.Accounts.FirstOrDefault();
             if (acc == null)
@@ -530,6 +530,8 @@ public partial class DashboardViewModel : ViewModelBase
                 CheckinStatus = "未登录";
                 return;
             }
+            // 独立 API 实例：LastError 隔离（并发流程不再互相覆盖错误文本）
+            var api = new TraeApiClient();
             CurrentAccount = string.IsNullOrEmpty(acc.Name)
                 ? $"账号@{(acc.AccountUid ?? acc.Id.Substring(0, 6))}"
                 : acc.Name!;
@@ -645,10 +647,22 @@ public partial class DashboardViewModel : ViewModelBase
         catch { /* 登录窗口异常不影响 */ }
     }
 
+    /// <summary>上次快签尝试时间（冷却用：连点快签会 1 秒内多次打 claim，加重 9074 风控）。</summary>
+    private static DateTime _lastQuickCheckinAttempt = DateTime.MinValue;
+    private static readonly TimeSpan QuickCheckinCooldown = TimeSpan.FromSeconds(10);
+
     [RelayCommand]
     private async Task QuickCheckin()
     {
         if (IsQuickChecking) return;   // 防重入：禁止重复点击导致重复记录
+        // 冷却：距上次尝试不足 10s 直接提示，不再发请求（旧版连点 4 次=4 秒内 4 次 claim，必然加重风控）
+        var sinceLast = DateTime.Now - _lastQuickCheckinAttempt;
+        if (sinceLast < QuickCheckinCooldown)
+        {
+            CheckinStatus = $"操作太频繁，{(int)(QuickCheckinCooldown - sinceLast).TotalSeconds + 1}s 后可重试";
+            return;
+        }
+        _lastQuickCheckinAttempt = DateTime.Now;
         IsQuickChecking = true;
         try
         {
@@ -668,14 +682,29 @@ public partial class DashboardViewModel : ViewModelBase
                 return;
             }
 
+            // 独立 API 实例：隔离 LastError，避免与并发的仪表盘刷新互相覆盖错误文本
+            api = new TraeApiClient();
+
             var name = string.IsNullOrEmpty(acc.Name) ? (acc.Id.Length > 6 ? acc.Id[..6] : acc.Id) : acc.Name!;
             AccountHelpers.CheckinLog(name, $"[仪表盘快签] 开始签到，DeviceId={acc.DeviceId}");
-            var result = await api.ClaimAsync(acc.Token, acc.DeviceId);
+
+            // token 失效先静默换新（有账号级闸门，不会重复探测），换不动才提示重登
+            if (!await AccountHelpers.EnsureValidTokenAsync(acc) || string.IsNullOrEmpty(acc.Token))
+            {
+                CheckinStatus = "需重登";
+                AccountHelpers.CheckinLog(name, "[仪表盘快签] Token 校验/换新失败，请重新登录");
+                RaiseNavigateRequested("checkin");
+                return;
+            }
+
+            // 9074 风控自动换设备号重试（对齐 checkin.py）
+            var result = await AccountHelpers.ClaimWithRiskRetryAsync(api, acc, name);
             if (result != null && result.code == 0)
             {
                 CheckinStatus = "已完成 ✓";
                 // 非会员 150，会员 150 + 50 连签
                 TodayReward = "+" + (int)(result.credits + (acc.IsMember ? result.extra_credits : 0));
+                AccountHelpers.MarkTokenValidPublic(acc.Id);
 
                 // 同一天已签到过则不重复写历史（避免手动/自动重复产生多条记录）
                 bool wasDoneToday = acc.LastCheckinDate.HasValue && acc.LastCheckinDate.Value.Date == DateTime.Today;

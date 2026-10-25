@@ -10,7 +10,11 @@ namespace TraeTools.Services.Login;
 /// </summary>
 public static class LoginHostClient
 {
-    public sealed record LoginResult(string Token, string? Session);
+    /// <summary>
+    /// 登录结果。Token 为空且 Error 非空 = 宿主启动/初始化失败（如 WebView2 不可用）；
+    /// 整体返回 null = 用户主动取消 / 登录未完成。
+    /// </summary>
+    public sealed record LoginResult(string? Token, string? Session, string? Error = null);
 
     /// <summary>宿主可执行文件名。</summary>
     public const string HelperFileName = "TraeTools.LoginHost.exe";
@@ -40,10 +44,12 @@ public static class LoginHostClient
     /// <summary>
     /// 启动宿主并等待其结束，返回取得的凭据；用户取消或超时返回 null。
     /// initialToken 用于让宿主忽略 localStorage 里的残留旧 token（只有"新 token"才被接受）。
+    /// expectedUid 为账号的平台用户 ID（JWT data.id）：宿主读到归属不符的 token 时不会关闭窗口，
+    /// 防止「残留会话自动续期出的他人 token」瞬间顶掉窗口（一闪而过）并造成跨账号凭据污染。
     /// </summary>
     public static Task<LoginResult?> RunAsync(
-        string userDataDir, string? initialToken, bool debugCapture = false, TimeSpan? timeout = null)
-        => RunCoreAsync(userDataDir, initialToken, debugCapture, timeout, null);
+        string userDataDir, string? initialToken, bool debugCapture = false, TimeSpan? timeout = null, string? expectedUid = null)
+        => RunCoreAsync(userDataDir, initialToken, debugCapture, timeout, expectedUid is null ? null : new[] { "--expected-uid", expectedUid });
 
     /// <summary>
     /// 核心实现。<paramref name="extraArgs"/> 供独立环境验证注入 <c>--selftest</c>（不显示窗口、直接回写结果），
@@ -95,22 +101,31 @@ public static class LoginHostClient
         }
     }
 
-    /// <summary>解析宿主回传的 JSON（AOT 友好：只用 JsonDocument，不用反射序列化）。</summary>
+    /// <summary>
+    /// 解析宿主回传的 JSON（AOT 友好：只用 JsonDocument，不用反射序列化）。
+    /// 兼容两种形态：成功 <c>{"token":..,"session":..}</c>；失败 <c>{"error":"原因"}</c>。
+    /// </summary>
     public static LoginResult? ParseResult(string json)
     {
         try
         {
             using var doc = JsonDocument.Parse(json);
             if (doc.RootElement.ValueKind != JsonValueKind.Object) return null;
-            if (!doc.RootElement.TryGetProperty("token", out var t) || t.ValueKind != JsonValueKind.String) return null;
-            var token = t.GetString();
-            if (string.IsNullOrWhiteSpace(token)) return null;
 
-            string? session = null;
-            if (doc.RootElement.TryGetProperty("session", out var s) && s.ValueKind == JsonValueKind.String)
-                session = s.GetString();
+            string? error = null;
+            if (doc.RootElement.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String)
+                error = e.GetString();
 
-            return new LoginResult(token!, string.IsNullOrWhiteSpace(session) ? null : session);
+            if (doc.RootElement.TryGetProperty("token", out var t) && t.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(t.GetString()))
+            {
+                string? session = null;
+                if (doc.RootElement.TryGetProperty("session", out var s) && s.ValueKind == JsonValueKind.String)
+                    session = s.GetString();
+                return new LoginResult(t.GetString(), string.IsNullOrWhiteSpace(session) ? null : session);
+            }
+
+            return error is null ? null : new LoginResult(null, null, error);
         }
         catch { return null; }
     }

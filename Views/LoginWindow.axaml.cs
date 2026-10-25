@@ -63,20 +63,40 @@ public partial class LoginWindow : Window
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "TraeTools", "WebView", "account_" + (_account.Id.Length > 12 ? _account.Id[..12] : _account.Id));
 
-            // 接口探索已完成；false=正常登录（自动识别并关闭窗口）。需要再抓包时改为 true
-            var result = await LoginHostClient.RunAsync(webViewDir, _account.Token, debugCapture: false);
+            // P2-1：内嵌浏览器已拆到独立宿主进程（TraeTools.LoginHost.exe），主程序不含 WinForms/WebView2。
+            // expectedUid：让宿主校验读到的 token 是否属于本账号，防止残留会话自动续期瞬间关窗（一闪而过）
+            // 并把其他账号的 token 存进来（跨账号凭据污染）。
+            var result = await LoginHostClient.RunAsync(webViewDir, _account.Token, debugCapture: false,
+                expectedUid: _account.AccountUid);
 
             if (result == null)
             {
                 AutoStatus.Text = "未获取到 Token（已取消或登录未完成）";
                 return;
             }
+            if (result.Token == null)
+            {
+                // 宿主初始化失败（WebView2 缺失/用户数据目录被锁等）：显示具体原因而不是笼统提示
+                AutoStatus.Text = "自动登录失败：" + (result.Error ?? "宿主未返回结果");
+                return;
+            }
+
+            // 身份二次校验：宿主已挡一轮，这里对返回值再校验一次（双保险）
+            var uid = TokenUtils.ParseAccountUid(result.Token);
+            if (!string.IsNullOrEmpty(_account.AccountUid) && !string.IsNullOrEmpty(uid)
+                && uid != _account.AccountUid)
+            {
+                AutoStatus.Text = $"登录的账号身份不符（当前账号 uid={_account.AccountUid}，网页登录 uid={uid}），已放弃保存。请退出网页登录后改用当前账号的手机号登录。";
+                return;
+            }
 
             _account.Token = result.Token;
-            _account.Session = result.Session;
+            // 关键保护：宿主没抓到 Session Cookie 时绝不能把已有的 Session 清掉
+            // （Session 是 token 过期后唯一续命手段，旧代码这里会把好 Session 覆盖成 null）
+            _account.Session = result.Session ?? _account.Session;
             _account.TokenUpdatedAt = DateTime.Now;
-            var uid = TokenUtils.ParseAccountUid(result.Token);
             if (!string.IsNullOrEmpty(uid)) _account.AccountUid = uid;
+            AccountHelpers.InvalidateTokenCache(_account.Id);   // 新登录态落盘后立即刷新校验缓存
             MainViewModel.AppConfig?.Save();
             Close(true);
         }
@@ -278,6 +298,8 @@ public partial class LoginWindow : Window
     ///
     /// 设备号处理：只在「本机其它账号都没用过」时才写入 —— 多账号共用同一设备号会被
     /// Trae 风控判为同一台机器并返回 9074，因此冲突时保留账号原有设备号。
+    /// 身份校验：凭证携带的 JWT data.id 与当前账号 AccountUid 不符时拒绝写入，
+    /// 防止把别的账号的登录态覆盖进来（跨账号污染）。
     /// </summary>
     private void ApplyCredential(string? token, string? session, string? deviceId, string note)
     {
@@ -294,7 +316,17 @@ public partial class LoginWindow : Window
                 return;
             }
 
-            if (!string.IsNullOrEmpty(token)) _account.Token = token;
+            if (!string.IsNullOrEmpty(token))
+            {
+                var uid = TokenUtils.ParseAccountUid(token);
+                if (!string.IsNullOrEmpty(_account.AccountUid) && !string.IsNullOrEmpty(uid)
+                    && uid != _account.AccountUid)
+                {
+                    AltStatus.Text = $"凭证属于另一个账号（当前账号 uid={_account.AccountUid}，凭证 uid={uid}），已拒绝写入。";
+                    return;
+                }
+                _account.Token = token;
+            }
             if (!string.IsNullOrEmpty(session)) _account.Session = session;
 
             if (!string.IsNullOrEmpty(deviceId)
@@ -305,8 +337,8 @@ public partial class LoginWindow : Window
             }
 
             _account.TokenUpdatedAt = DateTime.Now;
-            var uid = TokenUtils.ParseAccountUid(token ?? _account.Token);
-            if (!string.IsNullOrEmpty(uid)) _account.AccountUid = uid;
+            var newUid = TokenUtils.ParseAccountUid(token ?? _account.Token);
+            if (!string.IsNullOrEmpty(newUid)) _account.AccountUid = newUid;
 
             MainViewModel.AppConfig?.Save();
             AltStatus.Text = note;

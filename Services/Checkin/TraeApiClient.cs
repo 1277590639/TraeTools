@@ -24,19 +24,30 @@ public class CheckinStatus
 
 /// <summary>
 /// Trae 云 API 客户端：封装签到状态、执行签到、剩余积分查询三个接口。
+///
+/// 注意 LastError 是「实例级」错误槽：并发调用共享同一实例时错误文本会互相覆盖
+/// （曾经出现过 Claim 的 9074 日志里混入 GetUserToken 的错误文本）。
+/// 因此高并发路径（签到批处理 / 仪表盘刷新 / 快签）应各自 new 一个实例；
+/// HttpClient 为静态共享，新建实例没有 socket 开销。
 /// </summary>
 public class TraeApiClient
 {
     private const string BaseUrl = "https://api.trae.cn";
 
-    private readonly HttpClient _http;
+    /// <summary>静态共享 HttpClient：实例可以按调用上下文随意 new，连接池共用。</summary>
+    private static readonly HttpClient SharedHttp = CreateSharedHttp();
+
+    private readonly HttpClient _http = SharedHttp;
 
     public string? LastError { get; private set; }
 
-    public TraeApiClient()
+    public TraeApiClient() { }
+
+    private static HttpClient CreateSharedHttp()
     {
-        _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("TraeCheckin/1.0");
+        var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("TraeCheckin/1.0");
+        return http;
     }
 
     /// <summary>构造每请求的认证头。</summary>

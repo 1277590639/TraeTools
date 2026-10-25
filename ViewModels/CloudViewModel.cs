@@ -36,7 +36,7 @@ public partial class CloudViewModel : ViewModelBase
     private string _credentialExpiry = "—";
 
     [ObservableProperty]
-    private string _warningText = "云端签到使用 TRAE_SESSION 作为凭证（约 14 天有效）；过期后请重新登录 Trae 并重新部署。";
+    private string _warningText = "云端签到使用 TRAE_SESSION 作为凭证（Session 约 14 天有效；JWT 仅约 8 小时，由 Session 自动换新）。Session 过期后请重新登录 Trae 并重新部署。";
 
     /// <summary>部署操作日志（底部深色日志区）。</summary>
     [ObservableProperty]

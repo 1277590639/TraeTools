@@ -118,7 +118,7 @@ public partial class MainViewModel : ViewModelBase
                               + CheckinDb.MigrateFromSnapshotFiles(dir);
             }
             if (migrated > 0)
-                AccountHelpers.AppLog("account", "", $"从旧版文本文件迁移了 {migrated} 条记录到数据库");
+                AccountHelpers.AppLog("account", "", $"从旧版文本文件导入 {migrated} 条新记录到数据库（幂等：已有记录不会重复计入）");
         }
         catch
         {
@@ -265,14 +265,23 @@ public partial class MainViewModel : ViewModelBase
         try
         {
             var cfg = AppConfig;
-            var api = CheckinApi;
-            if (cfg == null || api == null) return false;
+            if (cfg == null) return false;
             var acc = cfg.Accounts.FirstOrDefault(a => a.Id == cfg.ActiveAccountId)
                       ?? cfg.Accounts.FirstOrDefault();
             if (acc == null || string.IsNullOrEmpty(acc.Token)) return false;
             var name = string.IsNullOrEmpty(acc.Name) ? (acc.Id.Length > 6 ? acc.Id[..6] : acc.Id) : acc.Name!;
+
+            // token 失效先静默换新（账号级闸门防重复探测）
+            if (!await AccountHelpers.EnsureValidTokenAsync(acc) || string.IsNullOrEmpty(acc.Token))
+            {
+                AccountHelpers.CheckinLog(name, "[托盘快签] Token 校验/换新失败，请重新登录");
+                return false;
+            }
+
+            // 独立 API 实例：隔离 LastError；9074 风控自动换设备号重试
+            var api = new TraeApiClient();
             AccountHelpers.CheckinLog(name, $"[托盘快签] 开始签到，DeviceId={acc.DeviceId}");
-            var result = await api.ClaimAsync(acc.Token, acc.DeviceId);
+            var result = await AccountHelpers.ClaimWithRiskRetryAsync(api, acc, name);
             if (result == null || result.code != 0)
             {
                 AccountHelpers.CheckinLog(name, $"[托盘快签] Claim 失败：code={result?.code ?? -1}, message={result?.message ?? "null"}");

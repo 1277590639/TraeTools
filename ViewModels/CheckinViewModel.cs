@@ -356,10 +356,11 @@ public partial class CheckinViewModel : ViewModelBase
     private async Task<(bool Any, List<(string Name, bool Ok, double Gained, string Reason)> Results)> CheckinAllAccountsAsync()
     {
         var cfg = MainViewModel.AppConfig;
-        var api = MainViewModel.CheckinApi;
         var results = new List<(string Name, bool Ok, double Gained, string Reason)>();
         bool any = false;
-        if (cfg == null || api == null) return (false, results);
+        if (cfg == null) return (false, results);
+        // 独立 API 实例：批处理期间的 LastError 不与仪表盘刷新/换新流程互相覆盖
+        var api = new TraeApiClient();
 
         AccountHelpers.CheckinLog("", $"===== 批量签到开始，共 {cfg.Accounts.Count(a => a.Enabled)} 个启用账号 =====");
         int idx = 0;
@@ -424,10 +425,9 @@ public partial class CheckinViewModel : ViewModelBase
                 else
                     AccountHelpers.CheckinLog(display, "Status 查询返回 null（网络异常）");
 
-                var (g, reason) = await CheckinOneAccountAsync(acc);
+                var (g, reason) = await CheckinOneAccountAsync(acc, api);
                 if (g > 0) any = true;
-                results.Add((display, g > 0, g, reason));
-            }
+                results.Add((display, g > 0, g, reason));            }
             catch (Exception ex)
             {
                 AccountHelpers.CheckinLog(display, $"签到异常：{ex.Message}");
@@ -438,24 +438,23 @@ public partial class CheckinViewModel : ViewModelBase
         return (any, results);
     }
 
-    /// <summary>对指定账号执行一次签到；返回 (本次获得的积分, 失败原因)。失败原因用于界面/推送明确提示。</summary>
-    private async Task<(double Gained, string Reason)> CheckinOneAccountAsync(TraeCheckin.TraeAccount acc)
+    /// <summary>对指定账号执行一次签到；返回 (本次获得的积分, 失败原因)。失败原因用于界面/推送明确提示。
+    /// 调用前须已完成 EnsureValidTokenAsync 校验（CheckinAllAccountsAsync 已做，这里不再重复探测）。</summary>
+    private async Task<(double Gained, string Reason)> CheckinOneAccountAsync(TraeCheckin.TraeAccount acc, TraeCheckin.TraeApiClient? api = null)
     {
         var cfg = MainViewModel.AppConfig;
-        var api = MainViewModel.CheckinApi;
+        api ??= MainViewModel.CheckinApi;
         var displayName = string.IsNullOrEmpty(acc.Name) ? (acc.Id.Length > 6 ? acc.Id[..6] : acc.Id) : acc.Name!;
         if (cfg == null || api == null) return (0, "服务未初始化");
-        AccountHelpers.EnsureDeviceId(acc);
-        // token 失效则先用 Session 静默换新，避免 claim 因鉴权失败
-        bool valid = await AccountHelpers.EnsureValidTokenAsync(acc);
-        if (!valid || string.IsNullOrEmpty(acc.Token))
+        if (string.IsNullOrEmpty(acc.Token))
         {
-            AccountHelpers.CheckinLog(displayName, "Claim 前 Token 校验失败");
+            AccountHelpers.CheckinLog(displayName, "Claim 前 Token 为空");
             return (0, "会话失效，请重新登录");
         }
 
         AccountHelpers.CheckinLog(displayName, $"调用 ClaimAsync，DeviceId={acc.DeviceId}");
-        var result = await api.ClaimAsync(acc.Token, acc.DeviceId);
+        // 9074「当前参与用户太多」= 设备号被风控标记：自动换新设备号重试（对齐 checkin.py，最多 5 次尝试）
+        var result = await AccountHelpers.ClaimWithRiskRetryAsync(api, acc, displayName);
         if (result == null || result.code != 0)
         {
             var code = result?.code ?? -1;

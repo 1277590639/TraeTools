@@ -355,7 +355,11 @@ public class CheckinDatabase : IDisposable
         return imported;
     }
 
-    /// <summary>从旧版 credits_total_*.txt 导入快照数据。</summary>
+    /// <summary>
+    /// 从旧版 credits_total_*.txt 导入快照数据。返回**实际新插入**的行数
+    /// （upsert 覆盖同值行不计入：旧实现把每次启动的重复 upsert 都当"迁移"上报，
+    /// 导致每次启动都日志刷"迁移了 N 条记录"，误导用户以为数据被反复重写）。
+    /// </summary>
     public int MigrateFromSnapshotFiles(string dataDir)
     {
         int imported = 0;
@@ -375,18 +379,19 @@ public class CheckinDatabase : IDisposable
                     if (!DateTime.TryParse(parts[0], out var dt)) continue;
                     if (!double.TryParse(parts[1], out var remaining)) continue;
 
-                    // 直接 INSERT OR REPLACE
-                    using var cmd = _conn.CreateCommand();
-                    cmd.CommandText = """
-                        INSERT INTO credits_snapshot (date, account_id, remaining)
-                        VALUES ($date, $accountId, $remaining)
-                        ON CONFLICT(date, account_id) DO UPDATE SET remaining = $remaining;
-                        """;
-                    cmd.Parameters.AddWithValue("$date", dt.ToString("yyyy-MM-dd"));
-                    cmd.Parameters.AddWithValue("$accountId", accountId);
-                    cmd.Parameters.AddWithValue("$remaining", remaining);
-                    cmd.ExecuteNonQuery();
-                    imported++;
+                    // INSERT OR IGNORE：已有行保持不动（旧行内容本身就是最新快照，无需覆盖）。
+                    // ExecuteNonQuery 返回 sqlite3_changes：真实插入=1，冲突忽略=0，以此精确计数。
+                    using (var cmd = _conn.CreateCommand())
+                    {
+                        cmd.CommandText = """
+                            INSERT OR IGNORE INTO credits_snapshot (date, account_id, remaining)
+                            VALUES ($date, $accountId, $remaining);
+                            """;
+                        cmd.Parameters.AddWithValue("$date", dt.ToString("yyyy-MM-dd"));
+                        cmd.Parameters.AddWithValue("$accountId", accountId);
+                        cmd.Parameters.AddWithValue("$remaining", remaining);
+                        imported += cmd.ExecuteNonQuery();
+                    }
                 }
             }
         }

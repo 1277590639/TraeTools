@@ -21,7 +21,8 @@ namespace TraeTools.Services;
 /// </summary>
 public static class UpdaterService
 {
-    public const string Repo = "star620/TraeTools";
+    // 二开仓库：应用内更新从此处（fork）的 Releases 拉取，不再指向原作者仓库
+    public const string Repo = "YYY2579/TraeTools";
 
     /// <summary>首选更新包资源名（AOT 目录版整包）。</summary>
     public const string PackageAssetName = "TraeTools-win-x64.zip";

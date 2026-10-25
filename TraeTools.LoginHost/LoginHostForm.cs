@@ -19,6 +19,7 @@ public sealed class LoginHostForm : Form
 {
     private readonly string _userDataDir;
     private readonly string? _initialToken;
+    private readonly string? _expectedUid;
     private readonly bool _debugCapture;
     private WebView2? _webView;
     private bool _tokenObtained;
@@ -45,11 +46,16 @@ public sealed class LoginHostForm : Form
     private const string DashboardUrl = "https://www.trae.cn/dashboard";
     private const string UsageUrl = "https://www.trae.cn/dashboard#usage";
     private TextBox? _addressBox;
+    private Label? _statusLabel;
 
-    public LoginHostForm(string userDataDir, string? initialToken, bool debugCapture = false)
+    /// <summary>拿到 token 后 Session Cookie 仍未出现时的补读次数（每次间隔 1 秒）。</summary>
+    private const int SessionCookieRetries = 4;
+
+    public LoginHostForm(string userDataDir, string? initialToken, string? expectedUid = null, bool debugCapture = false)
     {
         _userDataDir = userDataDir;
         _initialToken = initialToken;
+        _expectedUid = string.IsNullOrWhiteSpace(expectedUid) ? null : expectedUid.Trim();
         _debugCapture = debugCapture;
 
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -124,6 +130,18 @@ public sealed class LoginHostForm : Form
         }
 
         Controls.Add(top);
+
+        // 底部状态栏（所有模式都有）：显示当前状态 / 身份校验警告，避免"窗口闪没"时用户不知道发生了什么
+        _statusLabel = new Label
+        {
+            Text = "正在加载页面…",
+            Dock = DockStyle.Bottom,
+            Height = 26,
+            TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = Color.RoyalBlue,
+            Padding = new Padding(10, 0, 0, 0)
+        };
+        Controls.Add(_statusLabel);
         Load += OnLoad;
     }
 
@@ -198,6 +216,25 @@ public sealed class LoginHostForm : Form
             if (!accepted && !_debugCapture) return;   // 抓包模式放宽：只要页面里有 token 就开始等待 usage 数据
             if (string.IsNullOrEmpty(token)) return;
 
+            // ---- 身份校验（修复"一闪而过 + 跨账号污染"）----
+            // 残留的 Session Cookie 会让 trae.cn 页面在打开瞬间自动续期出"新 token"，
+            // 若该 token 属于另一个平台用户，旧逻辑会立刻接受并关窗（表现为窗口一闪而过），
+            // 且把别人的 token 存进当前账号。此处必须校验 JWT data.id 与期望账号一致。
+            var uid = TraeCheckin.TokenUtils.ParseAccountUid(token);
+            if (!_debugCapture && _expectedUid != null)
+            {
+                if (uid == null)
+                {
+                    // token 不是可识别的 JWT（官方可能更换格式）：无法验证归属，放行但明确提示
+                    SetStatus("⚠ 已获取 Token 但无法解析账号归属（官方格式可能已变化），自动继续…", Color.DarkOrange);
+                }
+                else if (!string.Equals(uid, _expectedUid, StringComparison.Ordinal))
+                {
+                    SetStatus($"⚠ 页面登录的是另一个账号（uid={uid}），与当前账号不符！请退出登录后改用当前账号的手机号登录。", Color.Firebrick);
+                    return;   // 不接受、不关窗，等用户切回正确账号
+                }
+            }
+
             string? session = null;
             try
             {
@@ -212,6 +249,28 @@ public sealed class LoginHostForm : Form
                 }
             }
             catch { /* 读取 Cookie 失败保持 null，仍可登录 */ }
+
+            // ---- Session 补读：token 往往先于 Cookie 就绪，缺 Session 意味着 8 小时后必然失效 ----
+            for (int i = 0; string.IsNullOrEmpty(session) && i < SessionCookieRetries; i++)
+            {
+                SetStatus($"已获取 Token，正在等待会话 Cookie（{i + 1}/{SessionCookieRetries}）… Session 是 token 过期后自动续期的关键。", Color.RoyalBlue);
+                await Task.Delay(1000);
+                try
+                {
+                    var cookies = await _webView.CoreWebView2.CookieManager.GetCookiesAsync("https://www.trae.cn/");
+                    foreach (var c in cookies)
+                    {
+                        if (c.Name == "X-Cloudide-Session")
+                        {
+                            session = c.Value;
+                            break;
+                        }
+                    }
+                }
+                catch { /* 继续等 */ }
+            }
+            if (string.IsNullOrEmpty(session) && !_debugCapture)
+                SetStatus("⚠ 未读到 X-Cloudide-Session：该登录态约 8 小时后就会失效且无法自动续期，建议关闭后重新登录一次。", Color.Firebrick);
 
             _tokenObtained = true;
             ResultToken = token;
@@ -232,10 +291,24 @@ public sealed class LoginHostForm : Form
             }
             else
             {
+                SetStatus("登录成功，正在保存…", Color.SeaGreen);
                 Close();
             }
         }
         catch { /* 页面尚未就绪，等待下个时钟周期 */ }
+    }
+
+    private void SetStatus(string text, Color color)
+    {
+        if (_statusLabel == null || _statusLabel.IsDisposed) return;
+        if (_statusLabel.InvokeRequired)
+        {
+            try { _statusLabel.BeginInvoke(new Action(() => { _statusLabel.Text = text; _statusLabel.ForeColor = color; })); }
+            catch { /* 窗口已关闭 */ }
+            return;
+        }
+        _statusLabel.Text = text;
+        _statusLabel.ForeColor = color;
     }
 
     // ---- 临时抓包逻辑 ----
