@@ -591,7 +591,7 @@ public partial class CloudViewModel : ViewModelBase
     {
         try
         {
-            var owner = string.IsNullOrEmpty(GitHubUser) ? "star620" : GitHubUser;
+            var owner = string.IsNullOrEmpty(GitHubUser) ? "YYY2579" : GitHubUser;
             var url = $"https://github.com/{owner}/{ForkRepo}/actions";
             Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
             AppendLog($"已在浏览器打开：{url}");

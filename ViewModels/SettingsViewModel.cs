@@ -128,10 +128,10 @@ public partial class SettingsViewModel : ViewModelBase
     [ObservableProperty]
     private AccountInfo? _selectedAccount;
 
-    // 关于区块属性
+    // 关于区块属性（二开：项目主页/Issue 指向本 fork；保留原作者仓库链接致谢）
     public string OriginalRepoUrl => "https://github.com/star620/TraeTools";
-    public string ForkRepoUrl => "https://github.com/star620/TraeTools";
-    public string IssuesUrl => "https://github.com/star620/TraeTools/issues";
+    public string ForkRepoUrl => "https://github.com/YYY2579/TraeTools";
+    public string IssuesUrl => "https://github.com/YYY2579/TraeTools/issues";
     public string AppVersion => TraeTools.Services.AppVersion.Display;
 
     public SettingsViewModel()
