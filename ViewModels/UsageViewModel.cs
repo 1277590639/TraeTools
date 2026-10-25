@@ -245,7 +245,7 @@ public partial class UsageViewModel : ViewModelBase
             var curPacks = await usageApi.GetCurrentEntitlementsAsync(acc.Token ?? "", acc.Session);
             UpdateExpiring(curPacks
                 .Where(p => p.Remaining > 0)
-                .Select(p => new TraeTools.Services.Usage.ExpiredEnt
+                .Select(p => new ExpiredEnt
                 {
                     Name = p.Name,
                     CreditsLimit = p.Remaining,
