@@ -29,16 +29,48 @@ public partial class UsageViewModel : ViewModelBase
     [ObservableProperty]
     private bool _isLoading;
 
-    // ---- 积分过期日志（全部账号） ----
+    // ---- 积分过期日志（全部账号，可按账号筛选） ----
 
-    /// <summary>全账号积分过期明细（按过期时间升序）。</summary>
+    private const string ExpiryFilterAll = "全部账号";
+
+    /// <summary>筛选后的展示行（由 _allExpiryRows 按账号过滤得出）。</summary>
     public ObservableCollection<ExpiryLogRow> ExpiryLogRows { get; } = new();
+
+    /// <summary>扫描全量数据（筛选的数据源）。</summary>
+    private List<ExpiryLogRow> _allExpiryRows = new();
 
     [ObservableProperty]
     private string _expirySummaryText = "";
 
     [ObservableProperty]
     private bool _isExpiryLoading;
+
+    /// <summary>账号筛选当前值："全部账号" 或具体账号名。</summary>
+    [ObservableProperty]
+    private string _expiryFilterAccount = ExpiryFilterAll;
+
+    public ObservableCollection<string> ExpiryFilterOptions { get; } = new();
+
+    partial void OnExpiryFilterAccountChanged(string value) => ApplyExpiryFilter();
+
+    private void ApplyExpiryFilter()
+    {
+        var rows = ExpiryFilterAccount == ExpiryFilterAll || ExpiryFilterAccount == ""
+            ? _allExpiryRows
+            : _allExpiryRows.Where(r => r.Account == ExpiryFilterAccount).ToList();
+
+        ExpiryLogRows.Clear();
+        foreach (var r in rows) ExpiryLogRows.Add(r);
+
+        double urgent = rows.Where(r => r.Level != "ok").Sum(r => r.Credits);
+        double totalAll = rows.Sum(r => r.Credits);
+        var scope = ExpiryFilterAccount == ExpiryFilterAll || ExpiryFilterAccount == ""
+            ? $"{_allExpiryRows.Select(r => r.Account).Distinct().Count()} 个账号"
+            : ExpiryFilterAccount;
+        ExpirySummaryText = rows.Count == 0
+            ? "没有待过期的积分包（扫描一次可刷新）"
+            : $"{scope} 共 {totalAll:0} 分待过期" + (urgent > 0 ? $"（7 天内 {urgent:0} 分）" : "");
+    }
 
     private static DateTime? _expiryLogDate;   // 每天自动写一条日志（手动刷新不限）
 
@@ -106,15 +138,20 @@ public partial class UsageViewModel : ViewModelBase
 
             if (_expiryLogDate != DateTime.Today) _expiryLogDate = DateTime.Today;
 
-            ExpiryLogRows.Clear();
-            foreach (var r in rows.OrderBy(r => r.DaysLeftSort).ThenBy(r => r.Account)) ExpiryLogRows.Add(r);
+            _allExpiryRows = rows.OrderBy(r => r.DaysLeftSort).ThenBy(r => r.Account).ToList();
 
-            double urgent = rows.Where(r => r.Level != "ok").Sum(r => r.Credits);
-            double totalAll = rows.Sum(r => r.Credits);
-            ExpirySummaryText = rows.Count == 0
-                ? $"{targets.Count} 个账号均无待过期积分"
-                : $"{targets.Count} 个账号共 {totalAll:0} 分待过期" + (urgent > 0 ? $"（7 天内 {urgent:0} 分）" : "");
-            AccountHelpers.AppLog("usage", "", $"[积分过期日志] 扫描完成：{ExpirySummaryText}");
+            // 重建筛选项：全部账号 + 各账号（尽量保留当前选择）
+            var keep = ExpiryFilterAccount;
+            ExpiryFilterOptions.Clear();
+            ExpiryFilterOptions.Add(ExpiryFilterAll);
+            foreach (var name in _allExpiryRows.Select(r => r.Account).Distinct())
+                ExpiryFilterOptions.Add(name);
+            if (keep == ExpiryFilterAll || ExpiryFilterOptions.Contains(keep))
+                ExpiryFilterAccount = keep;    // 相同值也走一遍 OnChanged 重建展示
+            else
+                ExpiryFilterAccount = ExpiryFilterAll;
+
+            AccountHelpers.AppLog("usage", "", $"[积分过期日志] 扫描完成：{ExpirySummaryText}（{rows.Count} 个待过期包）");
         }
         catch (Exception ex)
         {
