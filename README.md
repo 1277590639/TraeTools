@@ -57,8 +57,10 @@
 | 包 | 平台 | 说明 |
 |---|---|---|
 | `TraeTools-win-x64.zip` | 🪟 Windows 10/11 x64 | 解压运行，无需安装 .NET 运行时 |
-| `TraeBar-macos-arm64.zip` | 🍎 Apple Silicon（M1/M2/M3/M4…） | 解压后首次打开需右键 →「打开」（未公证） |
-| `TraeBar-macos-x64.zip` | 🍎 Intel Mac | 同上 |
+| `TraeBar-macos-arm64.dmg` | 🍎 Apple Silicon（M1/M2/M3/M4…） | 打开 dmg，把 TraeBar 拖入 Applications |
+| `TraeBar-macos-x64.dmg` | 🍎 Intel Mac | 同上 |
+
+> 🍎 macOS 包未做公证，**首次启动**：在「应用程序」里右键 TraeBar →「打开」；若提示已损坏，终端执行 `xattr -cr /Applications/TraeBar.app` 即可。
 
 ## 🚀 快速开始
 

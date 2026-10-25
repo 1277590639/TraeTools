@@ -55,7 +55,7 @@ jobs:
             publish\TraeTools.LoginHost.exe
           if-no-files-found: error
 
-  # ---------- macOS：TraeBar（Swift/AppKit 菜单栏版，源码在 macos 分支）双架构 ----------
+  # ---------- macOS：TraeBar（Swift/AppKit 菜单栏版，源码在 macos 分支）双架构 dmg ----------
   macos:
     name: macOS 包（Intel + Apple Silicon）
     runs-on: macos-latest
@@ -69,25 +69,27 @@ jobs:
           ref: macos
           path: macos-src
 
-      - name: Build TraeBar (Apple Silicon, arm64)
+      - name: Build and package dmg (Apple Silicon, arm64)
         run: |
           cd macos-src/macos
           swift build -c release --arch arm64
-          zip -j TraeBar-macos-arm64.zip .build/arm64-apple-macosx/release/TraeBar
+          bash "$GITHUB_WORKSPACE/.github/pkg_dmg.sh" arm64 "${GITHUB_REF_NAME}"
+          ls -la TraeBar-macos-arm64.dmg
 
-      - name: Build TraeBar (Intel, x86_64)
+      - name: Build and package dmg (Intel, x86_64)
         run: |
           cd macos-src/macos
           swift build -c release --arch x86_64
-          zip -j TraeBar-macos-x64.zip .build/x86_64-apple-macosx/release/TraeBar
+          bash "$GITHUB_WORKSPACE/.github/pkg_dmg.sh" x86_64 "${GITHUB_REF_NAME}"
+          ls -la TraeBar-macos-x64.dmg
 
       - name: Upload macOS packages
         uses: actions/upload-artifact@v4
         with:
           name: mac-packages
           path: |
-            macos-src/macos/TraeBar-macos-arm64.zip
-            macos-src/macos/TraeBar-macos-x64.zip
+            macos-src/macos/TraeBar-macos-arm64.dmg
+            macos-src/macos/TraeBar-macos-x64.dmg
           if-no-files-found: error
 
   # ---------- 汇总：两个平台都成功后创建 Release ----------
@@ -138,9 +140,9 @@ jobs:
             echo "### 📦 下载"
             echo ""
             echo "- 🪟 Windows x64：\`TraeTools-win-x64.zip\`（NativeAOT 整包，解压运行，无需安装 .NET 运行时）"
-            echo "- 🍎 macOS Apple Silicon (M 系列)：\`TraeBar-macos-arm64.zip\`（菜单栏版，未公证，首次打开请右键 → 打开）"
-            echo "- 🍎 macOS Intel：\`TraeBar-macos-x64.zip\`（同上）"
-            echo "- \`TraeTools.exe\` 为 Windows 单文件引导包，仅用于老版本客户端首次升级"
+            echo "- 🍎 macOS Apple Silicon (M 系列)：\`TraeBar-macos-arm64.dmg\`（打开 dmg 拖入 Applications；未公证，首次启动请右键 → 打开）"
+            echo "- 🍎 macOS Intel：\`TraeBar-macos-x64.dmg\`（同上）"
+            echo "- \`TraeTools.exe\` / \`TraeTools.LoginHost.exe\` 为 Windows 单文件引导包，仅用于老版本客户端首次升级"
             echo ""
             echo "应用内「检查更新」会下载本 Release 的 \`TraeTools-win-x64.zip\`，校验后自动替换整套文件并重启。"
             echo ""
@@ -171,6 +173,6 @@ jobs:
             dist/TraeTools-win-x64.zip
             dist/TraeTools.exe
             dist/TraeTools.LoginHost.exe
-            dist/TraeBar-macos-arm64.zip
-            dist/TraeBar-macos-x64.zip
+            dist/TraeBar-macos-arm64.dmg
+            dist/TraeBar-macos-x64.dmg
           generate_release_notes: false

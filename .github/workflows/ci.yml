@@ -59,25 +59,25 @@ jobs:
           ref: macos
           path: macos-src
 
-      - name: Build TraeBar (Apple Silicon, arm64)
+      - name: Build and package dmg (Apple Silicon, arm64)
         run: |
           cd macos-src/macos
           swift build -c release --arch arm64
-          zip -j TraeBar-macos-arm64.zip .build/arm64-apple-macosx/release/TraeBar
-          ls -la TraeBar-macos-arm64.zip
+          bash "$GITHUB_WORKSPACE/.github/pkg_dmg.sh" arm64 "${GITHUB_REF_NAME:-dev}"
+          ls -la TraeBar-macos-arm64.dmg
 
-      - name: Build TraeBar (Intel, x86_64)
+      - name: Build and package dmg (Intel, x86_64)
         run: |
           cd macos-src/macos
           swift build -c release --arch x86_64
-          zip -j TraeBar-macos-x64.zip .build/x86_64-apple-macosx/release/TraeBar
-          ls -la TraeBar-macos-x64.zip
+          bash "$GITHUB_WORKSPACE/.github/pkg_dmg.sh" x86_64 "${GITHUB_REF_NAME:-dev}"
+          ls -la TraeBar-macos-x64.dmg
 
       - name: Upload macOS packages
         uses: actions/upload-artifact@v4
         with:
           name: TraeBar-macos
           path: |
-            macos-src/macos/TraeBar-macos-arm64.zip
-            macos-src/macos/TraeBar-macos-x64.zip
+            macos-src/macos/TraeBar-macos-arm64.dmg
+            macos-src/macos/TraeBar-macos-x64.dmg
           if-no-files-found: error
