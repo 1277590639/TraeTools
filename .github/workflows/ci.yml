@@ -1,5 +1,6 @@
 name: CI
 
+# 提交即出包：每次 push / PR 构建三平台包（Windows x64 + macOS Intel + macOS Apple Silicon）
 on:
   push:
     branches: [main]
@@ -10,24 +11,73 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  windows:
+    name: Windows x64 包
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # P2-2：主程序已升到 net10.0-windows（NativeAOT 前置）
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
 
-      - name: Build (Release)
-        run: dotnet build TraeTools.csproj -c Release --nologo
+      # 与 Release 同形态：NativeAOT 目录版整包（libSkiaSharp 等原生库必须与 exe 同目录）
+      - name: Publish main (NativeAOT directory form)
+        run: dotnet publish TraeTools.csproj -c Release -r win-x64 --self-contained true -p:EnableAot=true -o publish_aot
 
-      - name: Upload build artifacts
+      # 登录宿主（WinForms + WebView2）独立进程，不参与 AOT，单独发布
+      - name: Publish login host
+        run: dotnet publish TraeTools.LoginHost/TraeTools.LoginHost.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish_aot
+
+      - name: Zip distribution
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path publish_aot -Recurse -Include *.pdb | Remove-Item -Force
+          Compress-Archive -Path publish_aot\* -DestinationPath TraeTools-win-x64.zip -Force
+          Get-ChildItem TraeTools-win-x64.zip | Select-Object Name, Length
+
+      - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:
-          name: trae-tools-build
-          path: bin/Release/net10.0-windows/
+          name: TraeTools-win-x64
+          path: TraeTools-win-x64.zip
+          if-no-files-found: error
+
+  macos:
+    name: macOS 包（Intel + Apple Silicon）
+    runs-on: macos-latest
+    steps:
+      - name: Checkout (main)
+        uses: actions/checkout@v4
+
+      # TraeBar（Swift/AppKit 菜单栏版）在 macos 分支的 macos/ 目录，单独检出
+      - name: Checkout TraeBar (macos branch)
+        uses: actions/checkout@v4
+        with:
+          ref: macos
+          path: macos-src
+
+      - name: Build TraeBar (Apple Silicon, arm64)
+        run: |
+          cd macos-src/macos
+          swift build -c release --arch arm64
+          zip -j TraeBar-macos-arm64.zip .build/arm64-apple-macosx/release/TraeBar
+          ls -la TraeBar-macos-arm64.zip
+
+      - name: Build TraeBar (Intel, x86_64)
+        run: |
+          cd macos-src/macos
+          swift build -c release --arch x86_64
+          zip -j TraeBar-macos-x64.zip .build/x86_64-apple-macosx/release/TraeBar
+          ls -la TraeBar-macos-x64.zip
+
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: TraeBar-macos
+          path: |
+            macos-src/macos/TraeBar-macos-arm64.zip
+            macos-src/macos/TraeBar-macos-x64.zip
           if-no-files-found: error

@@ -10,55 +10,110 @@ permissions:
   contents: write
 
 jobs:
-  publish:
+  # ---------- Windows：NativeAOT 目录版整包（应用内更新器下载的就是这个 zip） ----------
+  windows:
+    name: Windows x64 包
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0          # 拉取完整历史与所有 tag，供生成"上一版本→本版本"更新差异
-          fetch-tags: true
 
-      # P2-2：主程序已升到 net10.0-windows
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
 
-      # P2-4：更新分发包改为「NativeAOT 目录版整包 zip」。
+      # P2-4：更新分发包为「NativeAOT 目录版整包 zip」。
       # NativeAOT 产物不是单文件：libSkiaSharp / av_libglesv2 / e_sqlite3 / libHarfBuzzSharp /
-      # libsodium 必须与 exe 同目录，只替换 exe 会得到"缺 DLL 打不开"的残废程序。
-      # 应用内更新器（UpdaterService）现在下载 `TraeTools-win-x64.zip` → 校验 SHA-256 → 解包 →
-      # 整套文件原子替换 → 重启；zip 压缩也抵消了 AOT 原生库带来的体积增长。
+      # libsodium 必须与 exe 同目录；应用内更新器下载 zip → 校验 SHA-256 → 解包 → 原子替换 → 重启。
       - name: Publish main (NativeAOT directory form)
         run: dotnet publish TraeTools.csproj -c Release -r win-x64 --self-contained true -p:EnableAot=true -o publish_aot
 
       # 兼容引导包：历史客户端内的旧更新器只会下载名为 `TraeTools.exe` 的资产并替换自身。
-      # 提供单文件自包含版（csproj 已开 PublishTrimmed=full，约 23MB），老客户端可一次性升到新版，
-      # 之后其内置的新更新器会改走上面的 zip 整包。
       - name: Publish main (single-file bootstrap, legacy updater compatible)
         run: dotnet publish TraeTools.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o publish
 
-      # P2-1：登录宿主（WinForms + WebView2）是独立进程，不参与主程序的 NativeAOT，
-      # 因此单独发布并随压缩包/Release 一起分发；缺失时主程序自动回退到"手动粘贴 Token"。
+      # P2-1：登录宿主（WinForms + WebView2）是独立进程，不参与主程序的 NativeAOT，单独发布
       - name: Publish login host (separate process, not AOT)
         run: dotnet publish TraeTools.LoginHost/TraeTools.LoginHost.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish_aot
 
-      - name: Zip distribution (NativeAOT package, no PDBs)
-        # 必须用 pwsh：Windows PowerShell 5.1 的 Compress-Archive 会把条目名里的目录分隔符写成
-        # 反斜杠（实测 `a\b\z.pdb`），依赖"zip 内路径用 /"的解包器/校验器可能踩坑。
+      - name: Zip distribution
+        # 必须用 pwsh：Windows PowerShell 5.1 的 Compress-Archive 会把 zip 内路径分隔符写成反斜杠
         shell: pwsh
         run: |
-          Copy-Item publish_aot\TraeTools.LoginHost.exe publish\ -Force
           Get-ChildItem -Path publish_aot -Recurse -Include *.pdb | Remove-Item -Force
           Compress-Archive -Path publish_aot\* -DestinationPath TraeTools-win-x64.zip -Force
           Get-ChildItem -Path publish, publish_aot, TraeTools-win-x64.zip | Select-Object Name, Length
 
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-packages
+          path: |
+            TraeTools-win-x64.zip
+            publish/TraeTools.exe
+            publish/TraeTools.LoginHost.exe
+          if-no-files-found: error
+
+  # ---------- macOS：TraeBar（Swift/AppKit 菜单栏版，源码在 macos 分支）双架构 ----------
+  macos:
+    name: macOS 包（Intel + Apple Silicon）
+    runs-on: macos-latest
+    steps:
+      - name: Checkout (tag ref)
+        uses: actions/checkout@v4
+
+      - name: Checkout TraeBar (macos branch)
+        uses: actions/checkout@v4
+        with:
+          ref: macos
+          path: macos-src
+
+      - name: Build TraeBar (Apple Silicon, arm64)
+        run: |
+          cd macos-src/macos
+          swift build -c release --arch arm64
+          zip -j TraeBar-macos-arm64.zip .build/arm64-apple-macosx/release/TraeBar
+
+      - name: Build TraeBar (Intel, x86_64)
+        run: |
+          cd macos-src/macos
+          swift build -c release --arch x86_64
+          zip -j TraeBar-macos-x64.zip .build/x86_64-apple-macosx/release/TraeBar
+
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-packages
+          path: |
+            macos-src/macos/TraeBar-macos-arm64.zip
+            macos-src/macos/TraeBar-macos-x64.zip
+          if-no-files-found: error
+
+  # ---------- 汇总：两个平台都成功后创建 Release ----------
+  release:
+    name: 创建 Release
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for release notes)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: List packages
+        run: ls -la dist/
+
       # 自动生成更新摘要：取「版本号不大于当前版本」的最近一个 v* tag，
       # 汇总其到本版本之间的全部提交（跳过 merge 提交）。
-      # 注意：仓库保留着重构前的历史 tag（如 v1.5.2.1），必须排除版本号大于当前的，否则会选错上一版本。
       - name: Generate release notes
-        shell: bash
         run: |
           set -e
           CUR="${GITHUB_REF_NAME#v}"
@@ -80,9 +135,14 @@ jobs:
           {
             echo "TraeTools ${GITHUB_REF_NAME}"
             echo ""
-            echo "- Windows x64：\`TraeTools-win-x64.zip\`（NativeAOT 整包，解压运行，无需安装 .NET 运行时）"
-            echo "- 应用内「检查更新」会下载本 Release 的 \`TraeTools-win-x64.zip\`，校验后自动替换整套文件并重启"
-            echo "- \`TraeTools.exe\` 为单文件引导包，仅用于老版本客户端首次升级"
+            echo "### 📦 下载"
+            echo ""
+            echo "- 🪟 Windows x64：\`TraeTools-win-x64.zip\`（NativeAOT 整包，解压运行，无需安装 .NET 运行时）"
+            echo "- 🍎 macOS Apple Silicon (M 系列)：\`TraeBar-macos-arm64.zip\`（菜单栏版，未公证，首次打开请右键 → 打开）"
+            echo "- 🍎 macOS Intel：\`TraeBar-macos-x64.zip\`（同上）"
+            echo "- \`TraeTools.exe\` 为 Windows 单文件引导包，仅用于老版本客户端首次升级"
+            echo ""
+            echo "应用内「检查更新」会下载本 Release 的 \`TraeTools-win-x64.zip\`，校验后自动替换整套文件并重启。"
             echo ""
             if [ -n "${PREV}" ]; then
               echo "## 更新差异（${PREV} → ${GITHUB_REF_NAME}）"
@@ -102,7 +162,9 @@ jobs:
           name: "TraeTools ${{ github.ref_name }}"
           body_path: release_notes.md
           files: |
-            publish/TraeTools.exe
-            publish/TraeTools.LoginHost.exe
-            TraeTools-win-x64.zip
+            dist/TraeTools-win-x64.zip
+            dist/TraeTools.exe
+            dist/TraeTools.LoginHost.exe
+            dist/TraeBar-macos-arm64.zip
+            dist/TraeBar-macos-x64.zip
           generate_release_notes: false
