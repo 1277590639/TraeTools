@@ -9,6 +9,9 @@ set -euo pipefail
 
 ARCH="${1:?用法: pkg_dmg.sh <arm64|x86_64> <version>}"
 VERSION="${2:-dev}"
+# 文件名统一用 x64（与 workflow/README 一致），构建三元组仍是 x86_64
+LABEL="$ARCH"
+[ "$ARCH" = "x86_64" ] && LABEL="x64"
 APP=TraeBar.app
 BIN=".build/${ARCH}-apple-macosx/release/TraeBar"
 
@@ -44,5 +47,5 @@ codesign --force --sign - "$APP"
 mkdir -p dmg-stage
 cp -R "$APP" dmg-stage/
 ln -s /Applications dmg-stage/Applications
-hdiutil create -volname "TraeBar ${ARCH}" -srcfolder dmg-stage -ov -format UDZO "TraeBar-macos-${ARCH}.dmg"
+hdiutil create -volname "TraeBar ${LABEL}" -srcfolder dmg-stage -ov -format UDZO "TraeBar-macos-${LABEL}.dmg"
 rm -rf dmg-stage "$APP"
