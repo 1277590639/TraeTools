@@ -51,8 +51,8 @@ jobs:
           name: win-packages
           path: |
             TraeTools-win-x64.zip
-            publish/TraeTools.exe
-            publish/TraeTools.LoginHost.exe
+            publish\TraeTools.exe
+            publish\TraeTools.LoginHost.exe
           if-no-files-found: error
 
   # ---------- macOS：TraeBar（Swift/AppKit 菜单栏版，源码在 macos 分支）双架构 ----------
@@ -155,6 +155,12 @@ jobs:
             fi
           } > release_notes.md
           cat release_notes.md
+
+      - name: Flatten dist directory
+        run: |
+          mv dist/publish/* dist/ 2>/dev/null || true
+          rmdir dist/publish 2>/dev/null || true
+          ls -la dist/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
