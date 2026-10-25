@@ -34,6 +34,13 @@ public class TraeAccount
     /// </summary>
     public bool IsMember { get; set; }
 
+    /// <summary>
+    /// 本账号专属代理（host:port / http://… / socks5://…）。
+    /// 空 = 跟随全局设置（AppConfig.ProxyEnabled/ProxyServer）。
+    /// 用于多账号出口 IP 隔离：为不同账号配不同代理即可分网签到。
+    /// </summary>
+    public string Proxy { get; set; } = "";
+
     // ---- 账号资料（GetUserInfo / student_verification 逆向接口回填）----
     /// <summary>平台昵称（ScreenName）。Name 为空时优先用它展示。</summary>
     public string? ScreenName { get; set; }

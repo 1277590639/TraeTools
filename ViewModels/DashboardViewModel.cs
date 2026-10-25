@@ -478,12 +478,13 @@ public partial class DashboardViewModel : ViewModelBase
         {
             var cfg = MainViewModel.AppConfig;
             if (cfg == null) return;
-            // 独立 API 实例：LastError 不与并发的其他流程（签到/刷新/换新）互相覆盖
-            var api = new TraeApiClient();
 
             var acc = cfg.Accounts.FirstOrDefault(a => a.Id == cfg.ActiveAccountId)
                       ?? cfg.Accounts.FirstOrDefault();
             if (acc == null || string.IsNullOrEmpty(acc.Token)) return;
+
+            // 独立 API 实例：LastError 隔离 + 走当前账号代理
+            var api = new TraeApiClient(AccountHelpers.ResolveProxy(acc));
 
             var status = await api.GetStatusAsync(acc.Token, acc.DeviceId);
             if (status != null && status.code == 0)
@@ -530,8 +531,8 @@ public partial class DashboardViewModel : ViewModelBase
                 CheckinStatus = "未登录";
                 return;
             }
-            // 独立 API 实例：LastError 隔离（并发流程不再互相覆盖错误文本）
-            var api = new TraeApiClient();
+            // 独立 API 实例：LastError 隔离 + 走当前账号代理
+            var api = new TraeApiClient(AccountHelpers.ResolveProxy(acc));
             CurrentAccount = string.IsNullOrEmpty(acc.Name)
                 ? $"账号@{(acc.AccountUid ?? acc.Id.Substring(0, 6))}"
                 : acc.Name!;
@@ -682,8 +683,8 @@ public partial class DashboardViewModel : ViewModelBase
                 return;
             }
 
-            // 独立 API 实例：隔离 LastError，避免与并发的仪表盘刷新互相覆盖错误文本
-            api = new TraeApiClient();
+            // 独立 API 实例：LastError 隔离 + 走当前账号代理
+            api = new TraeApiClient(AccountHelpers.ResolveProxy(acc));
 
             var name = string.IsNullOrEmpty(acc.Name) ? (acc.Id.Length > 6 ? acc.Id[..6] : acc.Id) : acc.Name!;
             AccountHelpers.CheckinLog(name, $"[仪表盘快签] 开始签到，DeviceId={acc.DeviceId}");

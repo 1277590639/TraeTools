@@ -37,6 +37,10 @@ public static class AccountHelpers
     /// <summary>登录态变化（重新登录/换新失败）后调用，避免缓存掩盖真实状态。</summary>
     public static void InvalidateTokenCache(string accountId) => ValidUntil.TryRemove(accountId, out _);
 
+    /// <summary>解析账号生效代理：账号自有优先，其次全局；null = 直连。</summary>
+    public static string? ResolveProxy(TraeAccount acc)
+        => TraeTools.Services.NetProxy.Resolve(acc?.Proxy);
+
     /// <summary>缺号则生成不与其它账号重复的 16 位数字设备号（风控要求，多账号共用会触发 9074）。</summary>
     public static void EnsureDeviceId(TraeAccount acc)
     {
@@ -79,8 +83,8 @@ public static class AccountHelpers
             if (ValidUntil.TryGetValue(acc.Id, out until) && until > DateTime.Now)
                 return true;
 
-            // 换新专用客户端：隔离 LastError，避免与签到/仪表盘的并发调用互相覆盖错误文本
-            var renewApi = new TraeApiClient();
+            // 换新专用客户端：隔离 LastError，且走账号自己的代理
+            var renewApi = new TraeApiClient(ResolveProxy(acc));
 
             if (!string.IsNullOrEmpty(acc.Token))
             {
@@ -182,9 +186,10 @@ public static class AccountHelpers
     public static async Task<bool> RefreshProfileAsync(TraeAccount acc, bool force = false)
     {
         var cfg = MainViewModel.AppConfig;
-        var api = MainViewModel.CheckinApi;
         var name = string.IsNullOrEmpty(acc.Name) ? (acc.Id.Length > 6 ? acc.Id[..6] : acc.Id) : acc.Name!;
-        if (cfg == null || api == null || string.IsNullOrEmpty(acc.Token)) return false;
+        if (cfg == null || string.IsNullOrEmpty(acc.Token)) return false;
+        // 资料接口走账号自己的代理（独立实例隔离 LastError）
+        var api = new TraeApiClient(ResolveProxy(acc));
 
         // 当日已有缓存：直接回填，不再打接口
         lock (ProfileCacheLock)

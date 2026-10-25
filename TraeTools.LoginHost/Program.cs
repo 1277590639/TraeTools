@@ -14,10 +14,11 @@ namespace TraeTools.LoginHost;
 /// --selftest 不显示任何窗口，直接回写一份结果，用于在无 GUI 环境校验进程/文件契约。
 /// --expected-uid &lt;16位数字&gt;：账号平台用户 ID（JWT data.id）。宿主读到归属不符的
 /// token 时不接受、不关窗，防止残留会话自动续期瞬间顶掉窗口（"一闪而过"）并污染账号凭据。
+/// --proxy-server &lt;addr&gt;：webview 经指定代理上网（host:port / scheme://…），空 = 直连。
 /// </summary>
 internal static class Program
 {
-    private sealed record Options(string UserDataDir, string OutFile, string? InitialToken, string? ExpectedUid, bool DebugCapture, bool SelfTest);
+    private sealed record Options(string UserDataDir, string OutFile, string? InitialToken, string? ExpectedUid, string? ProxyServer, bool DebugCapture, bool SelfTest);
 
     [STAThread]
     private static int Main(string[] args)
@@ -38,7 +39,7 @@ internal static class Program
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            using var form = new LoginHostForm(opt.UserDataDir, opt.InitialToken, opt.ExpectedUid, opt.DebugCapture);
+            using var form = new LoginHostForm(opt.UserDataDir, opt.InitialToken, opt.ExpectedUid, opt.ProxyServer, opt.DebugCapture);
             form.FormClosing += (_, _) =>
             {
                 if (!string.IsNullOrEmpty(form.ResultToken))
@@ -62,7 +63,7 @@ internal static class Program
 
     private static Options? ParseArgs(string[] args)
     {
-        string? userDataDir = null, outFile = null, initialToken = null, expectedUid = null;
+        string? userDataDir = null, outFile = null, initialToken = null, expectedUid = null, proxyServer = null;
         bool debug = false, selfTest = false;
         for (int i = 0; i < args.Length; i++)
         {
@@ -72,12 +73,13 @@ internal static class Program
                 case "--out": if (i + 1 < args.Length) outFile = args[++i]; break;
                 case "--initial-token": if (i + 1 < args.Length) initialToken = args[++i]; break;
                 case "--expected-uid": if (i + 1 < args.Length) expectedUid = args[++i]; break;
+                case "--proxy-server": if (i + 1 < args.Length) proxyServer = args[++i]; break;
                 case "--debug-capture": debug = true; break;
                 case "--selftest": selfTest = true; break;
             }
         }
         if (string.IsNullOrWhiteSpace(userDataDir) || string.IsNullOrWhiteSpace(outFile)) return null;
-        return new Options(userDataDir, outFile, initialToken, expectedUid, debug, selfTest);
+        return new Options(userDataDir, outFile, initialToken, expectedUid, proxyServer, debug, selfTest);
     }
 
     /// <summary>临时文件 + 原子替换写回结果，避免主程序读到半截 JSON。</summary>

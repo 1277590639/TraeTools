@@ -54,6 +54,15 @@ public class AppConfig
     /// </summary>
     public string CloudCheckinTime { get; set; } = "08:00";
 
+    /// <summary>是否启用网络代理（签到/用量/GitHub 接口与登录浏览器统一走此代理）。</summary>
+    public bool ProxyEnabled { get; set; }
+
+    /// <summary>
+    /// 代理地址：host:port（视为 http）、http://host:port、socks5://[user:pass@]host:port。
+    /// 各账号可在 TraeAccount.Proxy 覆盖；空 = 跟随全局。
+    /// </summary>
+    public string ProxyServer { get; set; } = "";
+
     // ==================== 以下为本次 PR 追加的配置项 ====================
     // 注意：本类的落盘走 CloneForStorage 白名单（见该方法注释），
     // 因此**每新增一个属性都必须同步加进 CloneForStorage 与 UnsealSecrets**，
@@ -292,6 +301,8 @@ public class AppConfig
             StarAskedAfterDeploy = StarAskedAfterDeploy,
             MinimizeToTray = MinimizeToTray,
             CloudCheckinTime = CloudCheckinTime,
+            ProxyEnabled = ProxyEnabled,
+            ProxyServer = ProxyServer,
             // ===== 本次 PR 追加项 =====
             DarkMode = DarkMode,
             ThemeMode = ThemeMode,
@@ -332,6 +343,7 @@ public class AppConfig
                 RemainingCredits = a.RemainingCredits,
                 Enabled = a.Enabled,
                 IsMember = a.IsMember,
+                Proxy = a.Proxy,
                 ScreenName = a.ScreenName,
                 MobileMasked = a.MobileMasked,
                 AvatarUrl = a.AvatarUrl,

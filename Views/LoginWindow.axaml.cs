@@ -66,8 +66,9 @@ public partial class LoginWindow : Window
             // P2-1：内嵌浏览器已拆到独立宿主进程（TraeTools.LoginHost.exe），主程序不含 WinForms/WebView2。
             // expectedUid：让宿主校验读到的 token 是否属于本账号，防止残留会话自动续期瞬间关窗（一闪而过）
             // 并把其他账号的 token 存进来（跨账号凭据污染）。
+            // proxy：账号生效代理（账号自有优先，其次全局设置），登录浏览器与签到接口走同一出口。
             var result = await LoginHostClient.RunAsync(webViewDir, _account.Token, debugCapture: false,
-                expectedUid: _account.AccountUid);
+                expectedUid: _account.AccountUid, proxy: AccountHelpers.ResolveProxy(_account));
 
             if (result == null)
             {

@@ -33,15 +33,10 @@ public static class UpdaterService
     /// <summary>主程序文件名（更新后的启动目标）。</summary>
     public const string AppExeName = "TraeTools.exe";
 
-    private static readonly HttpClient Http = CreateHttp();
+    // 经全局代理（NetProxy 缓存共享连接池；设置变更后 ResetCache 自动生效）
+    private static HttpClient Http => TraeTools.Services.NetProxy.GetClient(TraeTools.Services.NetProxy.Global);
 
-    private static HttpClient CreateHttp()
-    {
-        var h = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        // GitHub REST API 对缺 User-Agent 的匿名请求会 403，必须带上
-        h.DefaultRequestHeaders.UserAgent.ParseAdd($"TraeTools/{CurrentVersion}");
-        return h;
-    }
+    // UpdateGuard 下载/查询走 NetProxy 缓存客户端（UA 由 NetProxy 统一设置）
 
     /// <summary>运行中程序的版本号。统一从 AppVersion（version.json 优先，InformationalVersion 兜底）读取，
     /// 与"关于"页展示保持同源，避免出现"显示 v1.0.2.2 / 却判 v1.0.2.0 为旧"的错位。</summary>

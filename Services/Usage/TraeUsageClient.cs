@@ -27,7 +27,14 @@ public sealed class TraeUsageClient
 
     public TraeUsageClient()
     {
-        _http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        _http = TraeTools.Services.NetProxy.GetClient(TraeTools.Services.NetProxy.Global);
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd("TraeTools/1.0");
+    }
+
+    /// <summary>按账号构造：账号配置了专属代理时走其代理，否则跟随全局。</summary>
+    public TraeUsageClient(string? proxy)
+    {
+        _http = TraeTools.Services.NetProxy.GetClient(proxy);
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("TraeTools/1.0");
     }
 

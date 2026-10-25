@@ -95,11 +95,13 @@ public partial class UsageViewModel : ViewModelBase
         var cfg = MainViewModel.AppConfig;
         var acc = cfg?.Accounts.FirstOrDefault(a => a.Id == cfg.ActiveAccountId)
                   ?? cfg?.Accounts.FirstOrDefault();
-        if (acc == null || MainViewModel.UsageApi == null)
+        if (acc == null)
         {
-            StatusMessage = "未添加账号或服务未初始化";
+            StatusMessage = "未添加账号";
             return;
         }
+        // 用量接口走当前账号的代理
+        var usageApi = new TraeTools.Services.Usage.TraeUsageClient(AccountHelpers.ResolveProxy(acc));
 
         if (IsLoading) return;
         IsLoading = true;
@@ -118,11 +120,11 @@ public partial class UsageViewModel : ViewModelBase
 
             var start = DateTime.Now.AddDays(-FetchDays);
             var end = DateTime.Now;
-            var fetched = await MainViewModel.UsageApi.FetchAllAsync(acc.Token ?? "", acc.Session, start, end);
-            if (fetched.Count == 0 && !string.IsNullOrEmpty(MainViewModel.UsageApi.LastError))
+            var fetched = await usageApi.FetchAllAsync(acc.Token ?? "", acc.Session, start, end);
+            if (fetched.Count == 0 && !string.IsNullOrEmpty(usageApi.LastError))
             {
-                AccountHelpers.AppLog("usage", accName, $"拉取失败：{MainViewModel.UsageApi.LastError}");
-                StatusMessage = $"拉取失败：{MainViewModel.UsageApi.LastError}";
+                AccountHelpers.AppLog("usage", accName, $"拉取失败：{usageApi.LastError}");
+                StatusMessage = $"拉取失败：{usageApi.LastError}";
                 return;
             }
 
@@ -130,7 +132,7 @@ public partial class UsageViewModel : ViewModelBase
             LoadFromStore(acc.Id);
 
             // 积分快过期提醒（读接口，不落地）
-            var expired = await MainViewModel.UsageApi.GetExpiredEntsAsync(acc.Token ?? "", acc.Session);
+            var expired = await usageApi.GetExpiredEntsAsync(acc.Token ?? "", acc.Session);
             UpdateExpiring(expired);
 
             AccountHelpers.AppLog("usage", accName, $"拉取完成：{fetched.Count} 条新会话");

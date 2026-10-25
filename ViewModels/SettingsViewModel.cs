@@ -53,6 +53,64 @@ public partial class SettingsViewModel : ViewModelBase
     [ObservableProperty]
     private string _feishuWebhook = "";
 
+    // ===== 网络代理（签到/用量/GitHub 接口 + 登录浏览器统一走此代理；账号可单独覆盖） =====
+
+    [ObservableProperty]
+    private bool _proxyEnabled;
+
+    [ObservableProperty]
+    private string _proxyServer = "";
+
+    [ObservableProperty]
+    private string _proxyTestResult = "";
+
+    [RelayCommand]
+    private async Task TestProxy()
+    {
+        if (ProxyEnabled && !NetProxy.IsValidServer(ProxyServer))
+        {
+            ProxyTestResult = "⚠ 代理地址格式无效（示例：127.0.0.1:7897 或 socks5://127.0.0.1:1080）";
+            return;
+        }
+        ProxyTestResult = "测试中…";
+        var (ok, message) = await NetProxy.TestAsync(ProxyEnabled ? ProxyServer : null);
+        ProxyTestResult = (ok ? "✓ " : "✗ ") + message;
+    }
+
+    [RelayCommand]
+    private void SaveAccountProxy()
+    {
+        try
+        {
+            var cfg = MainViewModel.AppConfig;
+            var acc = cfg?.Accounts.FirstOrDefault(a => a.Id == SelectedAccount?.Id);
+            if (acc == null)
+            {
+                PushStatus = "请先在上方选择账号";
+                return;
+            }
+            var v = AccountProxyText?.Trim() ?? "";
+            if (v.Length > 0 && !NetProxy.IsValidServer(v))
+            {
+                PushStatus = "账号代理格式无效（示例：127.0.0.1:7897 或 socks5://…），未保存";
+                return;
+            }
+            acc.Proxy = v;
+            cfg?.Save();
+            PushStatus = string.IsNullOrEmpty(v)
+                ? $"账号「{acc.Name}」已改为跟随全局代理"
+                : $"账号「{acc.Name}」代理已保存：{v}";
+        }
+        catch (Exception ex)
+        {
+            PushStatus = "保存失败：" + ex.Message;
+        }
+    }
+
+    /// <summary>选中账号的专属代理（空 = 跟随全局）。</summary>
+    [ObservableProperty]
+    private string _accountProxyText = "";
+
     [ObservableProperty]
     private bool _pushEnabled = true;
 
@@ -158,6 +216,8 @@ public partial class SettingsViewModel : ViewModelBase
                 AutoCheckinTime = cfg.AutoCheckinTime;
                 CheckinIntervalSeconds = Math.Clamp(cfg.CheckinIntervalSeconds > 0 ? cfg.CheckinIntervalSeconds : 5, 1, 60);
                 MinimizeToTray = cfg.MinimizeToTray;
+                ProxyEnabled = cfg.ProxyEnabled;
+                ProxyServer = cfg.ProxyServer;
 
                 var acc = cfg.Accounts.FirstOrDefault(a => a.Id == cfg.ActiveAccountId)
                           ?? cfg.Accounts.FirstOrDefault();
@@ -286,6 +346,7 @@ public partial class SettingsViewModel : ViewModelBase
                 TokenString = MaskToken(acc.Token);
                 TokenUpdateTime = acc.TokenUpdatedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—";
                 DeviceIdText = acc.DeviceId;
+                AccountProxyText = acc.Proxy ?? "";
                 // 设置页仅用于查看/编辑该账号，不再切换全局激活账号
             }
             else
@@ -293,6 +354,7 @@ public partial class SettingsViewModel : ViewModelBase
                 TokenString = "（无账号数据）";
                 TokenUpdateTime = "—";
                 DeviceIdText = "—";
+                AccountProxyText = "";
             }
         }
         catch { /* 联动失败不影响 */ }
@@ -438,8 +500,17 @@ public partial class SettingsViewModel : ViewModelBase
                 cfg.CheckinIntervalSeconds = Math.Clamp(CheckinIntervalSeconds, 1, 60);
                 cfg.FeishuWebhook = FeishuWebhook;
                 cfg.MinimizeToTray = MinimizeToTray;
+                // 网络代理：格式校验后保存并注入全局（签到/用量/GitHub 接口 + 登录浏览器）
+                if (ProxyEnabled && !NetProxy.IsValidServer(ProxyServer))
+                {
+                    PushStatus = "代理地址格式无效，未保存（示例：127.0.0.1:7897 或 socks5://127.0.0.1:1080）";
+                    return;
+                }
+                cfg.ProxyEnabled = ProxyEnabled;
+                cfg.ProxyServer = ProxyServer.Trim();
+                NetProxy.SetGlobal(NetProxy.ProxyAddress(cfg.ProxyEnabled, cfg.ProxyServer));
                 cfg.Save();
-                AccountHelpers.AppLog("account", "", $"设置已保存：自动签到={AutoCheckinEnabled}，时间={AutoCheckinTime}，间隔={cfg.CheckinIntervalSeconds}秒，托盘={MinimizeToTray}");
+                AccountHelpers.AppLog("account", "", $"设置已保存：自动签到={AutoCheckinEnabled}，时间={AutoCheckinTime}，间隔={cfg.CheckinIntervalSeconds}秒，托盘={MinimizeToTray}，代理={(ProxyEnabled ? cfg.ProxyServer : "关")}");
             }
 
             PushStatus = "已保存 ✓";

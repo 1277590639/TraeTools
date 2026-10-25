@@ -46,10 +46,25 @@ public static class LoginHostClient
     /// initialToken 用于让宿主忽略 localStorage 里的残留旧 token（只有"新 token"才被接受）。
     /// expectedUid 为账号的平台用户 ID（JWT data.id）：宿主读到归属不符的 token 时不会关闭窗口，
     /// 防止「残留会话自动续期出的他人 token」瞬间顶掉窗口（一闪而过）并造成跨账号凭据污染。
+    /// proxy 为账号生效代理（host:port / scheme://…），传入后 webview 经该代理上网；空 = 直连。
     /// </summary>
     public static Task<LoginResult?> RunAsync(
-        string userDataDir, string? initialToken, bool debugCapture = false, TimeSpan? timeout = null, string? expectedUid = null)
-        => RunCoreAsync(userDataDir, initialToken, debugCapture, timeout, expectedUid is null ? null : new[] { "--expected-uid", expectedUid });
+        string userDataDir, string? initialToken, bool debugCapture = false, TimeSpan? timeout = null,
+        string? expectedUid = null, string? proxy = null)
+    {
+        var extra = new List<string>();
+        if (expectedUid is not null)
+        {
+            extra.Add("--expected-uid");
+            extra.Add(expectedUid);
+        }
+        if (!string.IsNullOrWhiteSpace(proxy))
+        {
+            extra.Add("--proxy-server");
+            extra.Add(proxy.Trim());
+        }
+        return RunCoreAsync(userDataDir, initialToken, debugCapture, timeout, extra);
+    }
 
     /// <summary>
     /// 核心实现。<paramref name="extraArgs"/> 供独立环境验证注入 <c>--selftest</c>（不显示窗口、直接回写结果），

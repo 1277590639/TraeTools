@@ -92,7 +92,7 @@ public class GitHubApiClient
 
     public string? LastError { get; private set; }
 
-    public GitHubApiClient() : this(new HttpClient { Timeout = TimeSpan.FromSeconds(30) }) { }
+    public GitHubApiClient() : this(TraeTools.Services.NetProxy.GetClient(TraeTools.Services.NetProxy.Global)) { }
 
     /// <summary>测试专用：注入可拦截的 HttpClient。</summary>
     internal GitHubApiClient(HttpClient http)

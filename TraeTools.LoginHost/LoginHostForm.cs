@@ -20,6 +20,7 @@ public sealed class LoginHostForm : Form
     private readonly string _userDataDir;
     private readonly string? _initialToken;
     private readonly string? _expectedUid;
+    private readonly string? _proxyServer;
     private readonly bool _debugCapture;
     private WebView2? _webView;
     private bool _tokenObtained;
@@ -51,11 +52,12 @@ public sealed class LoginHostForm : Form
     /// <summary>拿到 token 后 Session Cookie 仍未出现时的补读次数（每次间隔 1 秒）。</summary>
     private const int SessionCookieRetries = 4;
 
-    public LoginHostForm(string userDataDir, string? initialToken, string? expectedUid = null, bool debugCapture = false)
+    public LoginHostForm(string userDataDir, string? initialToken, string? expectedUid = null, string? proxyServer = null, bool debugCapture = false)
     {
         _userDataDir = userDataDir;
         _initialToken = initialToken;
         _expectedUid = string.IsNullOrWhiteSpace(expectedUid) ? null : expectedUid.Trim();
+        _proxyServer = string.IsNullOrWhiteSpace(proxyServer) ? null : proxyServer.Trim();
         _debugCapture = debugCapture;
 
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -149,7 +151,14 @@ public sealed class LoginHostForm : Form
     {
         try
         {
-            var env = await CoreWebView2Environment.CreateAsync(null, _userDataDir);
+            // 账号专属代理：经 chromium 启动参数注入 webview（host:port / scheme://…）
+            var options = new CoreWebView2EnvironmentOptions();
+            if (!string.IsNullOrEmpty(_proxyServer))
+            {
+                options.AdditionalBrowserArguments = "--proxy-server=" + _proxyServer;
+                SetStatus("当前经代理上网：" + _proxyServer, Color.RoyalBlue);
+            }
+            var env = await CoreWebView2Environment.CreateAsync(null, _userDataDir, options);
             _webView = new WebView2 { Dock = DockStyle.Fill };
             Controls.Add(_webView);
             _webView.BringToFront();

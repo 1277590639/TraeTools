@@ -359,8 +359,7 @@ public partial class CheckinViewModel : ViewModelBase
         var results = new List<(string Name, bool Ok, double Gained, string Reason)>();
         bool any = false;
         if (cfg == null) return (false, results);
-        // 独立 API 实例：批处理期间的 LastError 不与仪表盘刷新/换新流程互相覆盖
-        var api = new TraeApiClient();
+        // 每账号独立客户端：LastError 隔离 + 各自走账号代理（多账号出口 IP 隔离）
 
         AccountHelpers.CheckinLog("", $"===== 批量签到开始，共 {cfg.Accounts.Count(a => a.Enabled)} 个启用账号 =====");
         int idx = 0;
@@ -408,8 +407,10 @@ public partial class CheckinViewModel : ViewModelBase
                     continue;
                 }
                 AccountHelpers.CheckinLog(display, "Token 校验通过");
+                // 本账号的签到客户端（走账号代理，LastError 与其他账号隔离）
+                var accApi = new TraeApiClient(AccountHelpers.ResolveProxy(acc));
                 // 真实状态判定：已真签（本地漏记）→ 补记并计入成功；未签才执行 claim
-                var st = await api.GetStatusAsync(acc.Token ?? "", acc.DeviceId);
+                var st = await accApi.GetStatusAsync(acc.Token ?? "", acc.DeviceId);
                 if (st is { } s && s.code == 0 && s.checked_in)
                 {
                     acc.LastCheckinDate = DateTime.Now;
@@ -425,9 +426,10 @@ public partial class CheckinViewModel : ViewModelBase
                 else
                     AccountHelpers.CheckinLog(display, "Status 查询返回 null（网络异常）");
 
-                var (g, reason) = await CheckinOneAccountAsync(acc, api);
+                var (g, reason) = await CheckinOneAccountAsync(acc, accApi);
                 if (g > 0) any = true;
-                results.Add((display, g > 0, g, reason));            }
+                results.Add((display, g > 0, g, reason));
+            }
             catch (Exception ex)
             {
                 AccountHelpers.CheckinLog(display, $"签到异常：{ex.Message}");

@@ -28,26 +28,23 @@ public class CheckinStatus
 /// 注意 LastError 是「实例级」错误槽：并发调用共享同一实例时错误文本会互相覆盖
 /// （曾经出现过 Claim 的 9074 日志里混入 GetUserToken 的错误文本）。
 /// 因此高并发路径（签到批处理 / 仪表盘刷新 / 快签）应各自 new 一个实例；
-/// HttpClient 为静态共享，新建实例没有 socket 开销。
+/// HttpClient 由 NetProxy 按代理地址缓存共享（同地址实例共享连接池）。
 /// </summary>
 public class TraeApiClient
 {
     private const string BaseUrl = "https://api.trae.cn";
 
-    /// <summary>静态共享 HttpClient：实例可以按调用上下文随意 new，连接池共用。</summary>
-    private static readonly HttpClient SharedHttp = CreateSharedHttp();
-
-    private readonly HttpClient _http = SharedHttp;
+    private readonly HttpClient _http;
 
     public string? LastError { get; private set; }
 
-    public TraeApiClient() { }
-
-    private static HttpClient CreateSharedHttp()
+    /// <summary>
+    /// proxy：null/空 = 直连；否则为代理地址（host:port / http://… / socks5://…）。
+    /// 签到/用量的账号级代理隔离经此参数传入。
+    /// </summary>
+    public TraeApiClient(string? proxy = null)
     {
-        var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("TraeCheckin/1.0");
-        return http;
+        _http = TraeTools.Services.NetProxy.GetClient(proxy);
     }
 
     /// <summary>构造每请求的认证头。</summary>

@@ -45,6 +45,8 @@ public partial class MainViewModel : ViewModelBase
         try
         {
             AppConfig = AppConfig.Load();
+            // 全局代理注入（签到/用量/GitHub 接口 + 登录浏览器统一走此代理；账号可覆盖）
+            NetProxy.SetGlobal(NetProxy.ProxyAddress(AppConfig.ProxyEnabled, AppConfig.ProxyServer));
         }
         catch
         {
@@ -278,8 +280,8 @@ public partial class MainViewModel : ViewModelBase
                 return false;
             }
 
-            // 独立 API 实例：隔离 LastError；9074 风控自动换设备号重试
-            var api = new TraeApiClient();
+            // 独立 API 实例：隔离 LastError + 走账号代理；9074 风控自动换设备号重试
+            var api = new TraeApiClient(AccountHelpers.ResolveProxy(acc));
             AccountHelpers.CheckinLog(name, $"[托盘快签] 开始签到，DeviceId={acc.DeviceId}");
             var result = await AccountHelpers.ClaimWithRiskRetryAsync(api, acc, name);
             if (result == null || result.code != 0)
