@@ -138,3 +138,20 @@ public sealed class ModelUsageStat
          : n >= 1_000 ? $"{n / 1_000.0:0.#}K"
          : n.ToString();
 }
+/// <summary>积分过期日志行（全账号扫描结果，一行 = 某账号的一个待过期积分包）。</summary>
+public sealed class ExpiryLogRow
+{
+    public string Account { get; set; } = "";
+    public string Name { get; set; } = "";
+    public double Credits { get; set; }
+    /// <summary>展示用："150 分"。</summary>
+    public string CreditsText => Credits.ToString("0") + " 分";
+    /// <summary>过期时间（本地，MM-dd HH:mm）。</summary>
+    public string ExpireText { get; set; } = "";
+    /// <summary>剩余天数文案（"今天内" / "N 天"）。</summary>
+    public string DaysText { get; set; } = "";
+    /// <summary>紧急度：urgent(≤3天) / warn(≤7天) / ok。</summary>
+    public string Level { get; set; } = "ok";
+    /// <summary>排序键：剩余毫秒。</summary>
+    public long DaysLeftSort { get; set; }
+}

@@ -120,6 +120,72 @@ public sealed class TraeUsageClient
     }
 
     /// <summary>查询资格包过期记录（含临期与已过期，供「积分快过期提醒」）。</summary>
+    /// <summary>当前持有的单个积分包（尚未过期）。</summary>
+    public sealed class EntitlementPack
+    {
+        public string Name { get; set; } = "";
+        public double CreditsLimit { get; set; }
+        public double Used { get; set; }
+        /// <summary>过期时间（epoch 秒；0/异常 = 长期）。</summary>
+        public long EndTimeSec { get; set; }
+        public double Remaining => Math.Max(0, CreditsLimit - Used);
+    }
+
+    /// <summary>
+    /// 拉取当前持有的全部积分包（含剩余与到期时间）。
+    /// 来源：POST /trae/api/v2/pay/user_current_entitlement_list。
+    /// 实测字段：display_desc/group_name=名称、end_time=过期（**秒**）、
+    /// quota.credits_limit=总额度、usage.credits_amount=已用（可能缺省=0）。
+    /// 注意 expired_ents 接口是「已过期历史」，不是即将过期。
+    /// </summary>
+    public async Task<List<EntitlementPack>> GetCurrentEntitlementsAsync(string token, string? session)
+    {
+        var list = new List<EntitlementPack>();
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post, BaseUrl + "/trae/api/v2/pay/user_current_entitlement_list");
+            req.Headers.TryAddWithoutValidation("Authorization", "Cloud-IDE-JWT " + token);
+            if (!string.IsNullOrEmpty(session))
+                req.Headers.TryAddWithoutValidation("Cookie", "X-Cloudide-Session=" + session);
+            req.Headers.TryAddWithoutValidation("Referer", "https://www.trae.cn/");
+            req.Headers.TryAddWithoutValidation("Origin", "https://www.trae.cn");
+            req.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+
+            using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
+            var json = await resp.Content.ReadAsStringAsync();
+            if (string.IsNullOrWhiteSpace(json)) { LastError = "HTTP 空响应"; return list; }
+            using var doc = JsonDocument.Parse(json);
+            if (!doc.RootElement.TryGetProperty("user_entitlement_pack_list", out var arr) ||
+                arr.ValueKind != JsonValueKind.Array)
+            {
+                LastError = "响应缺少 user_entitlement_pack_list";
+                return list;
+            }
+            foreach (var el in arr.EnumerateArray())
+            {
+                var info = el.TryGetProperty("entitlement_base_info", out var i) && i.ValueKind == JsonValueKind.Object
+                    ? i : default;
+                var quota = info.ValueKind != default && info.TryGetProperty("quota", out var q) ? q : default;
+                var usage = el.TryGetProperty("usage", out var u) && u.ValueKind == JsonValueKind.Object ? u : default;
+
+                var pack = new EntitlementPack
+                {
+                    Name = GetString(el, "display_desc") ?? GetString(el, "group_name") ?? "积分包",
+                    CreditsLimit = quota.ValueKind != default ? GetDouble(quota, "credits_limit") : 0,
+                    Used = usage.ValueKind != default ? GetDouble(usage, "credits_amount") : 0,
+                    EndTimeSec = info.ValueKind != default ? GetLong(info, "end_time") : 0,
+                };
+                list.Add(pack);
+            }
+            return list;
+        }
+        catch (Exception ex)
+        {
+            LastError = ex.Message;
+            return list;
+        }
+    }
+
     public async Task<List<ExpiredEnt>> GetExpiredEntsAsync(string token, string? session)
     {
         var list = new List<ExpiredEnt>();

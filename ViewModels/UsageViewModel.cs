@@ -29,6 +29,110 @@ public partial class UsageViewModel : ViewModelBase
     [ObservableProperty]
     private bool _isLoading;
 
+    // ---- 积分过期日志（全部账号） ----
+
+    /// <summary>全账号积分过期明细（按过期时间升序）。</summary>
+    public ObservableCollection<ExpiryLogRow> ExpiryLogRows { get; } = new();
+
+    [ObservableProperty]
+    private string _expirySummaryText = "";
+
+    [ObservableProperty]
+    private bool _isExpiryLoading;
+
+    private static DateTime? _expiryLogDate;   // 每天自动写一条日志（手动刷新不限）
+
+    /// <summary>扫描全部启用账号的积分包过期时间并刷新展示 + 落日志。</summary>
+    [RelayCommand]
+    private async Task RefreshExpiryLog()
+    {
+        var cfg = MainViewModel.AppConfig;
+        if (cfg == null || IsExpiryLoading) return;
+        var targets = cfg.Accounts.Where(a => a.Enabled && !string.IsNullOrEmpty(a.Token)).ToList();
+        if (targets.Count == 0) { ExpirySummaryText = "没有可用账号"; return; }
+
+        IsExpiryLoading = true;
+        ExpirySummaryText = "扫描中…";
+        try
+        {
+            var rows = new List<ExpiryLogRow>();
+            var summaries = new List<string>();
+
+            foreach (var acc in targets)
+            {
+                var accName = string.IsNullOrEmpty(acc.Name) ? (acc.Id.Length > 6 ? acc.Id[..6] : acc.Id) : acc.Name!;
+                try
+                {
+                    if (!await AccountHelpers.EnsureValidTokenAsync(acc) || string.IsNullOrEmpty(acc.Token))
+                    {
+                        summaries.Add($"{accName}：登录态失效");
+                        continue;
+                    }
+                    // 该账号自己的代理
+                    var usageApi = new TraeTools.Services.Usage.TraeUsageClient(AccountHelpers.ResolveProxy(acc));
+                    var packs = await usageApi.GetCurrentEntitlementsAsync(acc.Token, acc.Session);
+                    var nowSec = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                    double accTotal = 0;
+                    var accLines = new List<string>();
+                    foreach (var p in packs.Where(p => p.Remaining > 0 && p.EndTimeSec > nowSec && p.EndTimeSec < 4102444800)
+                                           .OrderBy(p => p.EndTimeSec))
+                    {
+                        var expireLocal = DateTimeOffset.FromUnixTimeSeconds(p.EndTimeSec).ToLocalTime();
+                        var days = (int)Math.Ceiling((p.EndTimeSec - nowSec) / 86400.0);
+                        rows.Add(new ExpiryLogRow
+                        {
+                            Account = accName,
+                            Name = string.IsNullOrEmpty(p.Name) ? "积分包" : p.Name,
+                            Credits = p.Remaining,
+                            ExpireText = expireLocal.ToString("yyyy-MM-dd"),
+                            DaysText = days <= 0 ? "今天内" : $"{days} 天",
+                            Level = days <= 3 ? "urgent" : days <= 7 ? "warn" : "ok",
+                            DaysLeftSort = p.EndTimeSec,
+                        });
+                        accTotal += p.Remaining;
+                        accLines.Add($"{p.Name} {p.Remaining:0}分→{expireLocal:MM-dd}");
+                    }
+                    summaries.Add($"{accName}：{(accTotal > 0 ? $"待过期 {accTotal:0} 分（{rows.Count(r => r.Account == accName)} 个包）" : "暂无待过期积分")}");
+
+                    // 每日一条日志落盘（usage_log），手动刷新不重复写
+                    if (accLines.Count > 0 && _expiryLogDate != DateTime.Today)
+                        AccountHelpers.AppLog("usage", accName, $"[积分过期日志] {string.Join("；", accLines)}");
+                }
+                catch (Exception ex)
+                {
+                    summaries.Add($"{accName}：查询异常 {ex.Message}");
+                }
+            }
+
+            if (_expiryLogDate != DateTime.Today) _expiryLogDate = DateTime.Today;
+
+            ExpiryLogRows.Clear();
+            foreach (var r in rows.OrderBy(r => r.DaysLeftSort).ThenBy(r => r.Account)) ExpiryLogRows.Add(r);
+
+            double urgent = rows.Where(r => r.Level != "ok").Sum(r => r.Credits);
+            double totalAll = rows.Sum(r => r.Credits);
+            ExpirySummaryText = rows.Count == 0
+                ? $"{targets.Count} 个账号均无待过期积分"
+                : $"{targets.Count} 个账号共 {totalAll:0} 分待过期" + (urgent > 0 ? $"（7 天内 {urgent:0} 分）" : "");
+            AccountHelpers.AppLog("usage", "", $"[积分过期日志] 扫描完成：{ExpirySummaryText}");
+        }
+        catch (Exception ex)
+        {
+            ExpirySummaryText = "扫描失败：" + ex.Message;
+        }
+        finally
+        {
+            IsExpiryLoading = false;
+        }
+    }
+
+    /// <summary>页面进入时每天自动扫一次（手动按钮不限次数）。</summary>
+    public void RefreshExpiryLogIfDue()
+    {
+        if (_expiryLogDate != DateTime.Today) _ = RefreshExpiryLogCommand.ExecuteAsync(null);
+    }
+
+
     // ---- 汇总卡片 ----
     [ObservableProperty]
     private int _totalSessions;
@@ -87,6 +191,7 @@ public partial class UsageViewModel : ViewModelBase
             TotalSessions = 0;
             return;
         }
+        RefreshExpiryLogIfDue();   // 页面进入时每天自动扫一次积分过期（手动按钮不限）
         CurrentAccount = string.IsNullOrEmpty(acc.Name)
             ? $"账号@{(acc.AccountUid ?? acc.Id.Substring(0, 6))}"
             : acc.Name;
@@ -136,9 +241,16 @@ public partial class UsageViewModel : ViewModelBase
             UsageStore.Merge(acc.Id, fetched);
             LoadFromStore(acc.Id);
 
-            // 积分快过期提醒（读接口，不落地）
-            var expired = await usageApi.GetExpiredEntsAsync(acc.Token ?? "", acc.Session);
-            UpdateExpiring(expired);
+            // 积分快过期提醒（当前持有包的剩余/到期；expired_ents 是已过期历史，语义不同）
+            var curPacks = await usageApi.GetCurrentEntitlementsAsync(acc.Token ?? "", acc.Session);
+            UpdateExpiring(curPacks
+                .Where(p => p.Remaining > 0)
+                .Select(p => new TraeTools.Services.Usage.ExpiredEnt
+                {
+                    Name = p.Name,
+                    CreditsLimit = p.Remaining,
+                    ExpireTimeMs = p.EndTimeSec * 1000,
+                }).ToList());
 
             AccountHelpers.AppLog("usage", accName, $"拉取完成：{fetched.Count} 条新会话");
             StatusMessage = fetched.Count > 0

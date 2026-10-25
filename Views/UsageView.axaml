@@ -109,6 +109,41 @@
                 </StackPanel>
             </Border>
 
+            <!-- ===== 积分过期日志（全部账号） ===== -->
+            <Border Classes="card" Margin="0,14,0,0">
+                <StackPanel Spacing="10">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock Grid.Column="0" Text="积分过期日志（全部账号）" Classes="card-title" />
+                        <Button Grid.Column="1" Classes="btn" Content="重新扫描" Command="{Binding RefreshExpiryLogCommand}"
+                                IsEnabled="{Binding !IsExpiryLoading}" Padding="12,5" FontSize="11" />
+                    </Grid>
+                    <TextBlock Text="{Binding ExpirySummaryText}" FontSize="12" Foreground="{DynamicResource TextSubBrush}" TextWrapping="Wrap" />
+                    <ItemsControl ItemsSource="{Binding ExpiryLogRows}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="models:ExpiryLogRow">
+                                <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto" Margin="0,2">
+                                    <Border Grid.Column="0" Width="110">
+                                        <TextBlock Text="{Binding Account}" FontSize="11" Foreground="{DynamicResource TextMainBrush}"
+                                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                    </Border>
+                                    <Border Grid.Column="1" Classes="badge-warn" Margin="0,0,8,0">
+                                        <TextBlock Text="{Binding CreditsText}" FontSize="11" Foreground="{DynamicResource WarningBrush}" />
+                                    </Border>
+                                    <TextBlock Grid.Column="2" Text="{Binding Name}" FontSize="11" Foreground="{DynamicResource TextMutedBrush}"
+                                               VerticalAlignment="Center" Margin="0,0,10,0" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Grid.Column="3" Text="{Binding ExpireText}" FontSize="11" Foreground="{DynamicResource TextMainBrush}"
+                                               FontFamily="Consolas" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="4" Text="{Binding DaysText}" FontSize="11" VerticalAlignment="Center"
+                                               Foreground="{DynamicResource DangerBrush}" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Text="每天进入本页自动扫描一次并写入运行日志；积分包过期后不可恢复，建议在过期前用完。" FontSize="10"
+                               Foreground="{DynamicResource TextSubBrush}" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
             <!-- ===== 会话列表 + 模型分布（占满剩余高度，内部各自滚动） ===== -->
             <Grid Grid.Row="3" ColumnDefinitions="1.6*,1*" Margin="0,14,0,0">
                 <!-- 会话列表 -->
