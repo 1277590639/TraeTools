@@ -1,6 +1,6 @@
-# 🛠️ TraeTools (AI 二开版)
+# 🛠️ TraeTools
 
-> ✨ 本项目基于 [star620/TraeTools](https://github.com/star620/TraeTools) 二次开发 —— **由 AI（ZCode）全程开发、调试与测试** 🤖
+> ✨ 本项目基于 [star620/TraeTools](https://github.com/star620/TraeTools) 二次开发，持续修复 Bug 并新增功能 🎁
 > 🎁 修复了一批影响使用的 Bug，并新增云端定时自定义等能力；如果你喜欢这个项目，**顺手点个 Star ⭐✨ 就是最大的鼓励啦～**
 >
 > 📦 提供三平台构建：**Windows x64** ／ **macOS Intel** ／ **macOS Apple Silicon (M 系列)**
@@ -119,14 +119,6 @@ dotnet build -c Release
 - 目录：`ViewModels/` 页面逻辑、`Services/` 网络与领域服务、`Views/` 界面、`Models/` 数据模型
 - 行为默认不对外请求官方非公开接口之外的能力；用量/积分接口为逆向网页接口，字段随官方可能变化，代码均做容错解析
 
-## 🤖 关于 AI 二开
-
-本仓库的全部二次开发（Bug 取证、修复、新功能、CI）由 **AI（ZCode）** 完成：
-
-- 🔍 基于运行日志与数据取证定位根因（JWT 实际 8 小时有效期、并发限流风暴、跨账号凭据污染等均由日志实锤）
-- 🧪 关键链路均有直连实测（登录宿主进程契约、GitHub 部署机制、cron 改写往返等）
-- 📝 每一项修复的问题-根因-验证三段式记录见 [修复报告](修复报告-2026-10-25.md)
-
 ## ⚠️ 免责声明
 
 - 本项目为个人开源工具，与 ByteDance / Trae 官方无任何关系
@@ -147,6 +139,6 @@ dotnet build -c Release
 
 <div align="center">
 
-**觉得好用就点个 Star ⭐ 吧～ 你的 Star 是 AI 继续打工的动力 🤖💪✨**
+**觉得好用就点个 Star ⭐ 吧～ 感谢每一位支持的朋友 🎉✨**
 
 </div>
