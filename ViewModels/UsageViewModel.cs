@@ -51,7 +51,12 @@ public partial class UsageViewModel : ViewModelBase
 
     public ObservableCollection<string> ExpiryFilterOptions { get; } = new();
 
-    partial void OnExpiryFilterAccountChanged(string value) => ApplyExpiryFilter();
+    private bool _suppressFilterApply;   // 重建选项时抑制联动（选项变化不算筛选动作）
+
+    partial void OnExpiryFilterAccountChanged(string value)
+    {
+        if (!_suppressFilterApply) ApplyExpiryFilter();
+    }
 
     private void ApplyExpiryFilter()
     {
@@ -72,6 +77,7 @@ public partial class UsageViewModel : ViewModelBase
             : $"{scope} 共 {totalAll:0} 分待过期" + (urgent > 0 ? $"（7 天内 {urgent:0} 分）" : "");
     }
 
+    private static DateTime? _lastExpiryScan;  // 上次扫描时间（3 分钟内不重复扫，手动按钮/切账号强制刷新）
     private static DateTime? _expiryLogDate;   // 每天自动写一条日志（手动刷新不限）
 
     /// <summary>扫描全部启用账号的积分包过期时间并刷新展示 + 落日志。</summary>
@@ -146,11 +152,11 @@ public partial class UsageViewModel : ViewModelBase
             ExpiryFilterOptions.Add(ExpiryFilterAll);
             foreach (var name in _allExpiryRows.Select(r => r.Account).Distinct())
                 ExpiryFilterOptions.Add(name);
-            if (keep == ExpiryFilterAll || ExpiryFilterOptions.Contains(keep))
-                ExpiryFilterAccount = keep;    // 相同值也走一遍 OnChanged 重建展示
-            else
-                ExpiryFilterAccount = ExpiryFilterAll;
+            _suppressFilterApply = true;
+            ExpiryFilterAccount = ExpiryFilterOptions.Contains(keep) ? keep : ExpiryFilterAll;
+            _suppressFilterApply = false;
 
+            ApplyExpiryFilter();   // 显式重建展示（值未变时 OnChanged 不会触发，必须显式调）
             AccountHelpers.AppLog("usage", "", $"[积分过期日志] 扫描完成：{ExpirySummaryText}（{rows.Count} 个待过期包）");
         }
         catch (Exception ex)
@@ -163,11 +169,15 @@ public partial class UsageViewModel : ViewModelBase
         }
     }
 
-    /// <summary>页面进入时每天自动扫一次（手动按钮不限次数）。</summary>
+    /// <summary>页面进入 / 切换账号时刷新（3 分钟缓存内不重复扫；手动按钮不限）。</summary>
     public void RefreshExpiryLogIfDue()
     {
-        if (_expiryLogDate != DateTime.Today) _ = RefreshExpiryLogCommand.ExecuteAsync(null);
+        if (_lastExpiryScan == null || DateTime.Now - _lastExpiryScan.Value > TimeSpan.FromMinutes(3))
+            _ = RefreshExpiryLogCommand.ExecuteAsync(null);
     }
+
+    /// <summary>切换账号等场景强制下一次查看时重新扫描。</summary>
+    public void InvalidateExpiryCache() => _lastExpiryScan = null;
 
 
     // ---- 汇总卡片 ----

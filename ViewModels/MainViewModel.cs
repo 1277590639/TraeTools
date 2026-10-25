@@ -237,6 +237,7 @@ public partial class MainViewModel : ViewModelBase
         {
             await vm._dashboard.RefreshAllAsync();
             vm._checkin.Reload();
+            vm._usage.InvalidateExpiryCache();   // 切换账号后强制重扫积分过期
             vm._usage.Reload();
             await vm._settings.RefreshAccountStatesAsync();
             vm.RefreshTopBar();   // 顶栏「当前生效」文案与下拉选中项随之更新
