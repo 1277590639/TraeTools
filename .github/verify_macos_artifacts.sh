@@ -108,12 +108,20 @@ ok "切换相对路径解析正常（含「未创建的边车必须判不存在�
 "$APP" --net-selftest > "$WORK/net.log" 2>&1
 rc=$?
 cat "$WORK/net.log"
-[ "$rc" = "0" ] || fail "网络/TLS 自检失败（见上方 net.log）"
-grep -qE "NET SELFTEST: (PASS|UNKNOWN)" "$WORK/net.log" || fail "网络/TLS 自检没有明确结论"
-if grep -q "NET SELFTEST: PASS" "$WORK/net.log"; then
-  ok "TLS 与到 api.trae.cn 的连通性正常"
-else
-  echo "OK 根证书库可用（外网连通性未知：CI 机器可能到不了国内站点）"
-fi
+[ "$rc" = "0" ] || fail "TLS 自检失败（见上方 net.log）"
+grep -q "NET SELFTEST: PASS" "$WORK/net.log" || fail "TLS 自检没有明确结论"
+ok "TLS 信任链在本平台可用（api.trae.cn 可达性见上方日志，不计入判定）"
+
+# ---------- 6. 原生依赖库是否随包 ----------
+# 自包含发布靠 NuGet 的 runtime assets 带出这些 .dylib。缺了不会编译失败，
+# 而是第一次用到该功能时才崩，且只在真机上暴露。
+# SQLite 已由冒烟间接证明（CheckinDatabase 构造即 Open+建表），这里补没被自检覆盖的。
+echo "--- 包内原生库 ---"
+find "$(dirname "$APP")" -maxdepth 1 -name '*.dylib' -exec basename {} \; | sort | sed 's/^/  /'
+for lib in libSkiaSharp.dylib libAvaloniaNative.dylib libHarfBuzzSharp.dylib \
+           libe_sqlite3.dylib libsodium.dylib; do
+  [ -f "$(dirname "$APP")/$lib" ] || fail "包内缺少原生库：$lib"
+done
+ok "原生库齐全（Skia/Avalonia/SQLite/Sodium/HarfBuzz）"
 
 echo "=== macOS 产物验收全部通过 ==="

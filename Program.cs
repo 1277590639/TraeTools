@@ -1,7 +1,6 @@
 using Avalonia;
 using System;
 using System.Net.Http;
-using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 
 namespace TraeTools;
@@ -172,44 +171,59 @@ sealed class Program
     }
 
     /// <summary>
-    /// 网络与 TLS 自检。签到/用量/云端全部走 https://api.trae.cn，
-    /// 而自包含的 macOS 包用的是 .NET 自己的证书链校验，根证书取自系统钥匙串 ——
-    /// 这一步坏掉时表现是「签到失败：SSL/信任」而不是编译或界面问题，
-    /// 且只在真机上才暴露。
+    /// TLS 自检。签到/用量/云端全走 https://api.trae.cn，而自包含 macOS 包的证书校验
+    /// 走 Security.framework，这一步坏掉时表现是「签到失败：SSL/信任」，只在真机暴露。
     ///
-    /// 三态判定：TLS 层失败 = 硬失败；连不上/超时只记 unknown（CI 机器可能因地域或
-    /// 网络策略打不到国内站点），不能把「没连上」当成「连接正常」。
+    /// 判据是**真实握手**，不是 X509Store(Root, CurrentUser) 的证书数：macOS 上根证书
+    /// 由 SecTrustEvaluate 在握手时取用，不会填进 .NET 的 X509Store，那个库恒为空 ——
+    /// 拿它当门禁会把正常的 macOS 运行时报成"根证书库为空"。
+    ///
+    /// 分两档：github API 是硬门禁（CI 一定到得了，用来证明 TLS 信任链机制本身可用）；
+    /// api.trae.cn 只记录结果，因为 CI 机器在境外，连不上不代表包有问题。
     /// </summary>
     private static int RunNetSelftest()
     {
-        // 1) 根证书库可读：HTTPS 校验的前提，macOS 上经 Security.framework 取
-        int rootCount = -1;
-        try
+        bool ok = true;
+
+        var gh = Probe("https://api.github.com");
+        if (gh == NetProbeResult.TlsFailure)
         {
-            using var store = new X509Store(StoreName.Root, StoreLocation.CurrentUser);
-            store.Open(OpenFlags.ReadOnly);
-            rootCount = store.Certificates.Count;
+            Console.Error.WriteLine("FAIL: 到 api.github.com 的 TLS 握手失败 —— 证书校验机制在本平台不可用，签到必然也失败");
+            ok = false;
         }
-        catch (Exception ex)
+        else if (gh == NetProbeResult.Ok)
         {
-            Console.Error.WriteLine($"FAIL: 根证书库不可读：{ex.GetType().Name}: {ex.Message}");
-            return 1;
+            Console.Error.WriteLine("[net] api.github.com TLS 正常");
         }
-        Console.Error.WriteLine($"[net] 根证书数: {rootCount}");
-        if (rootCount <= 0)
+        else
         {
-            Console.Error.WriteLine("FAIL: 根证书库为空，任何 https 请求都会验不过");
-            return 1;
+            Console.Error.WriteLine("FAIL: 连 api.github.com 都不可达，无法判定 TLS（CI 网络异常）");
+            ok = false;
         }
 
-        // 2) 真发一次请求：任何 HTTP 状态码都说明 TLS 握手与证书链已经成功
+        var trae = Probe(TraeCheckin.TraeApiClient.BaseUrl);
+        Console.Error.WriteLine(trae switch
+        {
+            NetProbeResult.Ok => $"[net] {TraeCheckin.TraeApiClient.BaseUrl} 可达且 TLS 正常",
+            NetProbeResult.TlsFailure => $"[net] {TraeCheckin.TraeApiClient.BaseUrl} TLS/证书异常",
+            _ => $"[net] {TraeCheckin.TraeApiClient.BaseUrl} 不可达（CI 在境外属正常，不计失败）",
+        });
+        if (trae == NetProbeResult.TlsFailure) ok = false;
+
+        Console.WriteLine(ok ? "NET SELFTEST: PASS" : "NET SELFTEST: FAIL");
+        return ok ? 0 : 1;
+    }
+
+    private enum NetProbeResult { Ok, TlsFailure, Unreachable }
+
+    private static NetProbeResult Probe(string baseUrl)
+    {
         try
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
-            var resp = http.GetAsync(TraeCheckin.TraeApiClient.BaseUrl + "/").GetAwaiter().GetResult();
-            Console.Error.WriteLine($"[net] {TraeCheckin.TraeApiClient.BaseUrl} -> HTTP {(int)resp.StatusCode}");
-            Console.WriteLine("NET SELFTEST: PASS");
-            return 0;
+            var resp = http.GetAsync(baseUrl).GetAwaiter().GetResult();
+            Console.Error.WriteLine($"[net] {baseUrl} -> HTTP {(int)resp.StatusCode}");
+            return NetProbeResult.Ok;   // 任何 HTTP 状态码都说明握手与证书链已通过
         }
         catch (HttpRequestException ex)
         {
@@ -219,21 +233,12 @@ sealed class Program
                           || inner.Contains("SSL", StringComparison.OrdinalIgnoreCase)
                           || ex.Message.Contains("ssl", StringComparison.OrdinalIgnoreCase)
                           || ex.Message.Contains("trust", StringComparison.OrdinalIgnoreCase);
-            if (tlsish)
-            {
-                Console.Error.WriteLine($"FAIL: TLS/证书校验失败（inner={inner}）：{ex.Message}");
-                Console.Error.WriteLine("NET SELFTEST: FAIL");
-                return 1;
-            }
-            Console.Error.WriteLine($"[net] 连不上而非 TLS 问题（inner={inner}）：{ex.Message}");
-            Console.WriteLine("NET SELFTEST: UNKNOWN");
-            return 0;
+            Console.Error.WriteLine($"[net] {baseUrl} 异常 inner={inner}: {ex.Message}");
+            return tlsish ? NetProbeResult.TlsFailure : NetProbeResult.Unreachable;
         }
         catch (TaskCanceledException)
         {
-            Console.Error.WriteLine("[net] 请求超时（CI 地域/网络策略所致，非 TLS 问题）");
-            Console.WriteLine("NET SELFTEST: UNKNOWN");
-            return 0;
+            return NetProbeResult.Unreachable;
         }
     }
 
