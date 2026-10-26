@@ -16,8 +16,13 @@ public static class LoginHostClient
     /// </summary>
     public sealed record LoginResult(string? Token, string? Session, string? Error = null);
 
-    /// <summary>宿主可执行文件名。</summary>
-    public const string HelperFileName = "TraeTools.LoginHost.exe";
+    /// <summary>
+    /// 宿主可执行文件名。Windows 是 .NET 宿主 TraeTools.LoginHost.exe，
+    /// macOS 是 Swift+WKWebView 宿主 TraeTools.LoginHost（无扩展名）。
+    /// 两者按同一套命令行参数与 --out 回写 JSON 契约工作，主程序无需区分。
+    /// </summary>
+    public static string HelperFileName =>
+        OperatingSystem.IsWindows() ? "TraeTools.LoginHost.exe" : "TraeTools.LoginHost";
 
     /// <summary>环境变量覆盖（测试/便携部署用）。</summary>
     public const string HelperPathEnvVar = "TRAETOOLS_LOGIN_HOST";
