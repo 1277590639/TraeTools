@@ -543,3 +543,4 @@ Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction Silent
             exit 1
             """;
     }
+}
