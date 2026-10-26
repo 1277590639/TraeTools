@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "勾选=真的创建 GitHub Release 并上传安装包；不勾=只构建并归档安装包用于验证"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -151,8 +156,10 @@ jobs:
           if-no-files-found: error
 
   # ---------- 汇总：两个平台都成功后创建 Release ----------
+  # 手动触发且 publish=false 时跳过这一步：可以在不发布的前提下验证三平台打包是否真的能出包。
   release:
     name: 创建 Release
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.publish == 'true'
     needs: [windows, macos, macos-desktop]
     runs-on: ubuntu-latest
     steps:
