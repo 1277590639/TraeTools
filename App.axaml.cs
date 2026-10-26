@@ -22,18 +22,28 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
+            Boot("app-before-mainvm");
             var vm = new MainViewModel();
+            Boot("app-after-mainvm");
 
             // 主题必须在窗口创建前应用：否则会先按默认变体绘制一帧再切过去（可见闪一下）。
             // MainViewModel 的构造已完成 AppConfig.Load()，此处读到的就是用户设置。
             ThemeService.Apply(MainViewModel.AppConfig?.ThemeMode);
+            Boot("app-theme-applied");
 
             desktop.MainWindow = new MainWindow
             {
                 DataContext = vm,
             };
+            Boot("app-mainwindow-assigned");
+        }
+        else
+        {
+            Boot("app-no-desktop-lifetime");
         }
 
         base.OnFrameworkInitializationCompleted();
     }
+
+    private static void Boot(string stage) => Console.Error.WriteLine($"[boot] {stage}");
 }

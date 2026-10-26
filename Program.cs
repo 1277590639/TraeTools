@@ -23,16 +23,43 @@ sealed class Program
             return;
         }
 
+        // CI 冒烟需要知道启动到底走到哪一步：Rosetta 转译下 /usr/bin/sample 的栈回溯是坏的，
+        // 只能靠程序自己打点。stderr 会并进 app.log。
+        Boot("main-entered");
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            Console.Error.WriteLine($"[boot] UNHANDLED {e.ExceptionObject}");
+
+        try
+        {
+            Run(args);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[boot] FATAL {ex}");
+            throw;
+        }
+    }
+
+    private static void Run(string[] args)
+    {
         using var mutex = new Mutex(true, MutexName, out bool createdNew);
         if (!createdNew)
         {
             // 已有实例在运行，直接退出本实例（TraeTools 为单实例工具）
+            Boot("another-instance-exits");
             return;
         }
+        Boot("mutex-acquired");
         // 旧版 TraeCheckin / TraeSwitch 数据迁移到统一根 %APPDATA%\TraeTools（幂等，保留旧目录）
         TraeTools.Services.DataPaths.Migrate();
-        BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+        Boot("paths-migrated");
+        var app = BuildAvaloniaApp();
+        Boot("builder-configured");
+        app.StartWithClassicDesktopLifetime(args);
+        Boot("lifetime-returned");
     }
+
+    private static void Boot(string stage) => Console.Error.WriteLine($"[boot] {stage}");
 
     // Avalonia configuration, don't remove; also used by visual designer.
     public static AppBuilder BuildAvaloniaApp()

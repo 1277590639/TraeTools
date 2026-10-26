@@ -95,40 +95,39 @@ jobs:
           mkdir -p /tmp/smoke
           ./out-macos/TraeTools > /tmp/smoke/app.log 2>&1 &
           APP_PID=$!
-          sleep 15
-          if ! kill -0 "$APP_PID" 2>/dev/null; then
-            echo "FAIL: 进程已退出，未存活到 15s"
-            echo "--- app.log ---"
-            cat /tmp/smoke/app.log
-            exit 1
-          fi
-          echo "ALIVE pid=$APP_PID"
-          ps -o pid,stat,%cpu,rss -p "$APP_PID" || true
+          # 轮询而不是固定等待：runner 是 Apple Silicon，x86_64 产物走 Rosetta 转译，
+          # 冷启动耗时抖动很大；固定 15s 分不清「还没起来」和「永远起不来」。
+          WC=0
+          for i in $(seq 1 20); do
+            sleep 3
+            if ! kill -0 "$APP_PID" 2>/dev/null; then
+              echo "FAIL: 进程在第 $((i*3))s 退出"
+              cat /tmp/smoke/app.log
+              exit 1
+            fi
+            if osascript -e "tell application \"System Events\" to get count of windows of (first process whose unix id is $APP_PID)" \
+                > /tmp/smoke/window-count.txt 2>/tmp/smoke/osascript.err; then
+              WC=$(tr -d '[:space:]' < /tmp/smoke/window-count.txt)
+            else
+              WC=unknown
+            fi
+            echo "t=$((i*3))s windows=$WC"
+            # 只在拿到真实正整数窗口数时才停；unknown 继续轮询，
+            # 否则第 3s 一次偶发失败会让截图拍早。
+            if [[ "$WC" =~ ^[0-9]+$ ]] && [ "$WC" -gt 0 ]; then break; fi
+          done
+          echo "ELAPSED_TO_WINDOW: 最多 $((20*3))s，末次 windows=$WC"
           screencapture -x /tmp/smoke/screen-15s.png
-          # 数窗口需要辅助功能权限。取不到记为 unknown，不判死；
-          # 但明确取到 0 个窗口是真回归 —— 进程活着却没界面，正是本次要拦的东西。
-          if osascript -e "tell application \"System Events\" to get count of windows of (first process whose unix id is $APP_PID)" \
-              > /tmp/smoke/window-count.txt 2>/tmp/smoke/osascript.err; then
-            WC=$(tr -d '[:space:]' < /tmp/smoke/window-count.txt)
-            echo "窗口数: $WC"
-          else
-            WC=unknown
-            echo "窗口数: unknown（osascript 失败，多为无辅助功能权限）"
+          ps -o pid,stat,%cpu,rss,etime -p "$APP_PID" || true
+          if [ "$WC" = "unknown" ]; then
+            echo "窗口数 unknown（osascript 失败，多为无辅助功能权限），仅以截图为准"
             cat /tmp/smoke/osascript.err
           fi
-          if [ "$WC" = "0" ]; then
-            echo "DIAG: 进程存活但零窗口，抓调用栈定位卡点"
-            sample "$APP_PID" 3 -file /tmp/smoke/sample.txt >/dev/null 2>&1 || true
-            ps -o pid,ppid,stat,wchan,%cpu -p "$APP_PID" > /tmp/smoke/ps.txt 2>&1 || true
-            vmmap "$APP_PID" --summary > /tmp/smoke/vmmap.txt 2>&1 || true
-            echo "--- sample 摘要 ---"
-            head -60 /tmp/smoke/sample.txt || true
-          fi
-          echo "--- app.log 尾部 ---"
-          tail -40 /tmp/smoke/app.log
+          echo "--- app.log ---"
+          cat /tmp/smoke/app.log
           kill "$APP_PID" 2>/dev/null || true
           if [ "$WC" = "0" ]; then
-            echo "FAIL: 零窗口，UI 没起来"
+            echo "FAIL: 轮询满 60s 仍零窗口，UI 没起来（看 app.log 里 [boot] 打到哪一步）"
             exit 1
           fi
 
