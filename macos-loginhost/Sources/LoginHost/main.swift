@@ -97,6 +97,20 @@ func parseAccountUid(_ jwt: String?) -> String? {
     return id
 }
 
+// MARK: - 代理
+//
+// 结论：macOS 上 WKWebView 没有可用的连接级代理入口，本宿主拒绝带 --proxy-server 启动。
+// 试过并实测否掉的方案（都跑过本地记录型代理做阳性对照，代理侧零流量）：
+//   · UserDefaults 写 ProxySettings —— 裸二进制与包成 .app 各试一次，均不生效
+//   · CFPreferencesSetValue(kCFPreferencesCurrentApplication/CurrentUser/AnyHost) —— 同样不生效
+// 剩下的路只有私有 API 或改系统全局代理，两者都不该由一个登录窗口静默做。
+//
+// 影响范围有限：主程序的签到 / 用量 / GitHub 接口 / 飞书走 NetProxy（HttpClientHandler
+// + WebProxy），是 .NET 自己的 HTTP 栈，macOS 上照常生效。只有这个内嵌登录浏览器除外。
+//
+// 为什么是「报错退出」而不是「忽略参数继续」：忽略会让用户以为这个账号走了独立代理，
+// 实际和别的账号同一个出口 IP —— 那正是触发 9074 风控的条件，静默降级比直接失败危险。
+
 // MARK: - 回写
 
 func writeJSON(_ payload: [String: Any], to outFile: String) -> Bool {
@@ -193,8 +207,9 @@ final class HostController: NSObject, NSWindowDelegate, WKNavigationDelegate {
     }
 
     func run() -> Never {
-        guard let url = URL(string: "https://www.trae.cn/dashboard") else {
-            writeError(opts.outFile, "登录地址无效")
+        let target = "https://www.trae.cn/dashboard"
+        guard let url = URL(string: target) else {
+            writeError(opts.outFile, "登录地址无效：\(target)")
             exit(4)
         }
         webView.load(URLRequest(url: url))
@@ -205,6 +220,7 @@ final class HostController: NSObject, NSWindowDelegate, WKNavigationDelegate {
             self?.poll()
         }
         RunLoop.main.add(pollTimer!, forMode: .common)
+
 
         // 退出统一走 exit()：NSApplication.terminate 不会再回到这里，
         // 结果文件必须在 finish() 里先写完再退。
@@ -287,9 +303,7 @@ final class HostController: NSObject, NSWindowDelegate, WKNavigationDelegate {
 
 // MARK: - KnownDifferences（相对 Windows 宿主的有意差异）
 //
-// 1. --proxy-server：**不支持，且会明确报错而不是静默直连。**
-//    WKWebView 没有公开的连接级代理入口。若在这里忽略该参数，用户以为多账号分网、
-//    实际全走同一个出口 IP，正是触发 9074 风控的条件——静默降级比直接失败危险得多。
+// 1. 代理：不支持，见文件头「代理」小节的实测记录。
 // 2. --user-data-dir：仅建目录以满足契约，浏览器数据用非持久化 store（见 buildUI 注释）。
 // 3. --debug-capture：接口抓包逆向能力未移植，接受该参数但不产出抓包文件。
 
@@ -319,9 +333,11 @@ if let probe = opts.jwtUidProbe {
     exit(0)
 }
 
-if let proxy = opts.proxyServer, !proxy.isEmpty {
-    writeError(opts.outFile, "macOS 登录宿主不支持 --proxy-server（\(proxy)）。"
-             + "为避免你以为分网了、实际全走同一出口，这里直接失败而不是静默直连。")
+if let raw = opts.proxyServer, !raw.isEmpty {
+    writeError(opts.outFile, "macOS 登录宿主不支持 --proxy-server（\(raw)）：WKWebView 没有可用的"
+             + "连接级代理入口，实测 ProxySettings 两种写法都不生效。为避免你以为这个账号走了独立"
+             + "代理、实际和其它账号同一个出口 IP，这里直接失败而不是静默直连。"
+             + "签到/用量/GitHub 接口的代理不受影响，只有登录这一步需要直连网络。")
     exit(4)
 }
 

@@ -38,6 +38,7 @@ ok "宿主成功回写结构符合 LoginHostClient.ParseResult"
 
 # 代理这条必须是「显式失败」而不是静默直连：静默直连会让用户以为多账号分网了，
 # 实际全走同一个出口 IP，正是触发 9074 风控的条件。
+# （WKWebView 在 macOS 上做不到连接级代理，两种 ProxySettings 写法已实测否掉。）
 "$HOST" --user-data-dir "$WORK/ud" --out "$WORK/px.json" --proxy-server 127.0.0.1:7890 >/dev/null 2>&1; rc=$?
 [ "$rc" = "4" ] || fail "宿主不支持代理时应返回 4，实际 $rc"
 python3 - "$WORK/px.json" <<'PY' || exit 1
