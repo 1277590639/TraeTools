@@ -124,4 +124,14 @@ for lib in libSkiaSharp.dylib libAvaloniaNative.dylib libHarfBuzzSharp.dylib \
 done
 ok "原生库齐全（Skia/Avalonia/SQLite/Sodium/HarfBuzz）"
 
+# ---------- 7. 应用内更新的换包逻辑 ----------
+# 更新器是唯一能把用户现有安装直接搞坏的模块。这里跑真实的替换脚本与真实的
+# hdiutil/ditto，重点验两条失败路径：放入失败要能回滚、缺登录宿主的包要拒绝安装。
+"$APP" --update-swap-selftest > "$WORK/swap.log" 2>&1
+rc=$?
+cat "$WORK/swap.log"
+[ "$rc" = "0" ] || fail "换包自检失败（见上方 swap.log）"
+grep -q "UPDATE SWAP SELFTEST: PASS" "$WORK/swap.log" || fail "换包自检没有明确结论"
+ok "更新换包/回滚/解包/缺宿主拒装 四条路径正常"
+
 echo "=== macOS 产物验收全部通过 ==="

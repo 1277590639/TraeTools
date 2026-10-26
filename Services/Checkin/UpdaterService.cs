@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -32,6 +33,49 @@ public static class UpdaterService
 
     /// <summary>主程序文件名（更新后的启动目标）。</summary>
     public const string AppExeName = "TraeTools.exe";
+
+    /// <summary>macOS 更新包资源名（按机器架构，不是按进程架构 —— Rosetta 下跑的 x64 进程应该升到 arm64）。</summary>
+    public static string MacPackageAssetName =>
+        RuntimeInformation.OSArchitecture == Architecture.Arm64
+            ? "TraeTools-macos-arm64.dmg"
+            : "TraeTools-macos-x64.dmg";
+
+    /// <summary>当前平台应当下载的整包资源名。</summary>
+    public static string CurrentPackageAssetName =>
+        OperatingSystem.IsWindows() ? PackageAssetName : MacPackageAssetName;
+
+    /// <summary>
+    /// 从 macOS 主程序路径取出外层 .app bundle 路径；不是 bundle 内布局则返回 null。
+    /// </summary>
+    public static string? BundleRootOf(string exePath)
+    {
+        if (string.IsNullOrEmpty(exePath)) return null;
+        var full = exePath.Replace('\\', '/');
+        var cut = full.IndexOf(".app/", StringComparison.OrdinalIgnoreCase);
+        if (cut <= 0)
+        {
+            // 结尾正好是 .app 的情况（理论上不会，主程序在 Contents/MacOS 下）
+            return full.EndsWith(".app", StringComparison.OrdinalIgnoreCase) ? full : null;
+        }
+        return full[..(cut + 4)];
+    }
+
+    /// <summary>
+    /// 更新要替换的目标目录：Windows 是程序所在目录；macOS 是 .app bundle 的**父目录**
+    /// （替换的是整个 bundle，不是 Contents/MacOS 里的单个文件）。
+    /// </summary>
+    public static string? InstallTargetDir()
+    {
+        var exe = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(exe)) return null;
+        if (OperatingSystem.IsWindows()) return Path.GetDirectoryName(exe);
+        var bundle = BundleRootOf(exe);
+        return bundle is null ? Path.GetDirectoryName(exe) : Path.GetDirectoryName(bundle);
+    }
+
+    /// <summary>当前安装的可执行/启动目标名。</summary>
+    public static string CurrentLaunchTargetName =>
+        OperatingSystem.IsWindows() ? AppExeName : "TraeTools.app";
 
     // 经全局代理（NetProxy 缓存共享连接池；设置变更后 ResetCache 自动生效）
     private static HttpClient Http => TraeTools.Services.NetProxy.GetClient(TraeTools.Services.NetProxy.Global);
@@ -132,7 +176,15 @@ public static class UpdaterService
         if (ver <= CurrentVersion) return null;   // 本地已是最新（>= 远程）
 
         var picked = PickAsset(root);
-        return picked == null ? null : new ReleaseInfo(tag.GetString()!, ver, picked.Value.Url, picked.Value.Name,
+        if (picked == null)
+        {
+            // 确实有新版、但这次 Release 里没有本平台的包。不能退化成"已是最新版本"——
+            // 那会让人以为更新器坏了，而真实情况是发布缺件。
+            throw new InvalidOperationException(
+                $"发现新版本 {tag.GetString()}，但该 Release 里没有 {CurrentPackageAssetName}，无法应用内更新。"
+                + "请到 Releases 页手动下载。");
+        }
+        return new ReleaseInfo(tag.GetString()!, ver, picked.Value.Url, picked.Value.Name,
             picked.Value.Size, picked.Value.IsZip, picked.Value.Sha256Hex);
     }
 
@@ -142,6 +194,7 @@ public static class UpdaterService
         if (!root.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
             return null;
 
+        var want = CurrentPackageAssetName;
         (string Url, string Name, long Size, bool IsZip, string? Sha256Hex)? fallback = null;
         foreach (var a in assets.EnumerateArray())
         {
@@ -151,9 +204,11 @@ public static class UpdaterService
             long size = a.TryGetProperty("size", out var s) ? s.GetInt64() : 0;
             var sha = ParseDigest(a);
 
-            if (string.Equals(name, PackageAssetName, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(name, want, StringComparison.OrdinalIgnoreCase))
                 return (url!, name, size, true, sha);
-            if (fallback == null && string.Equals(name, LegacyExeAssetName, StringComparison.OrdinalIgnoreCase))
+            // 单文件 exe 回退只可能对 Windows 有意义：给 macOS 挑一个 .exe 会装出一个跑不了的东西
+            if (fallback == null && OperatingSystem.IsWindows()
+                && string.Equals(name, LegacyExeAssetName, StringComparison.OrdinalIgnoreCase))
                 fallback = (url!, name, size, false, sha);
         }
         return fallback;
@@ -228,6 +283,8 @@ public static class UpdaterService
     /// </summary>
     public static string PreparePackage(string packagePath, string targetDir)
     {
+        if (!OperatingSystem.IsWindows()) return PrepareMacPackage(packagePath);
+
         var staging = Path.Combine(targetDir, ".~update");
         if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
         Directory.CreateDirectory(staging);
@@ -235,6 +292,83 @@ public static class UpdaterService
         if (!File.Exists(Path.Combine(staging, AppExeName)))
             throw new InvalidDataException($"更新包结构不合法：根目录缺少 {AppExeName}");
         return staging;
+    }
+
+    /// <summary>
+    /// macOS：挂载 dmg，用 ditto 把整个 .app 复制到临时暂存目录。
+    /// 暂存放临时目录而不是安装目录内 —— /Applications 未必可写，提前在里面建目录
+    /// 会把一次本可提示的权限问题变成难以解释的 IO 异常。
+    /// ditto 而非 cp -R：它是 macOS 复制 bundle 的标准工具，保留符号链接与包内元数据。
+    /// </summary>
+    private static string PrepareMacPackage(string dmgPath)
+    {
+        var staging = Path.Combine(Path.GetTempPath(), "TraeTools_update_stage_" + Guid.NewGuid().ToString("N"));
+        var mount = Path.Combine(Path.GetTempPath(), "TraeTools_mnt_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(staging);
+        Directory.CreateDirectory(mount);
+        try
+        {
+            RunOrFail("hdiutil", $"attach -nobrowse -quiet -mountpoint \"{mount}\" \"{dmgPath}\"",
+                "挂载更新 dmg 失败");
+
+            var srcBundle = Path.Combine(mount, "TraeTools.app");
+            if (!Directory.Exists(srcBundle))
+                throw new InvalidDataException("更新包结构不合法：dmg 根目录缺少 TraeTools.app");
+
+            // 缺登录宿主的包不能装：装完自动登录会静默退化成手动粘 Cookie
+            var host = Path.Combine(srcBundle, "Contents", "MacOS", "TraeTools.LoginHost");
+            if (!File.Exists(host))
+                throw new InvalidDataException("更新包结构不合法：bundle 内缺少登录宿主 TraeTools.LoginHost");
+
+            RunOrFail("ditto", $"\"{srcBundle}\" \"{Path.Combine(staging, "TraeTools.app")}\"",
+                "复制新版 bundle 到暂存目录失败");
+            return staging;
+        }
+        finally
+        {
+            RunQuiet("hdiutil", $"detach -quiet -force \"{mount}\"");
+            try { Directory.Delete(mount, recursive: true); } catch { /* 临时目录残留无害 */ }
+        }
+    }
+
+    private static void RunOrFail(string file, string args, string whatFailed)
+    {
+        var psi = new ProcessStartInfo(file)
+        {
+            Arguments = args,
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false,
+        };
+        using var p = Process.Start(psi) ?? throw new InvalidOperationException(whatFailed + "：无法启动 " + file);
+        p.WaitForExit(120_000);
+        if (p.ExitCode != 0)
+        {
+            var err = Safe(p.StandardError.ReadToEnd());
+            throw new InvalidOperationException($"{whatFailed}（exit {p.ExitCode}）{err}");
+        }
+    }
+
+    private static void RunQuiet(string file, string args)
+    {
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo(file)
+            {
+                Arguments = args,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+            });
+            p?.WaitForExit(30_000);
+        }
+        catch { /* 清理尽力而为 */ }
+    }
+
+    private static string Safe(string s)
+    {
+        try { return string.IsNullOrWhiteSpace(s) ? "" : "：" + s.Trim(); }
+        catch { return ""; }
     }
 
     /// <summary>
@@ -250,6 +384,12 @@ public static class UpdaterService
     /// </summary>
     public static void ApplyInBackground(string stagingDir, string targetDir)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            ApplyMacInBackground(stagingDir, targetDir);
+            return;
+        }
+
         var ps1 = Path.Combine(Path.GetTempPath(), $"apply_update_{Guid.NewGuid():N}.ps1");
         var body = $@"
 $stage = ""{stagingDir}""
@@ -290,5 +430,82 @@ Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction Silent
             UseShellExecute = false
         };
         Process.Start(psi);
+    }
+
+    /// <summary>
+    /// macOS：起一个分离的 bash 进程，等旧进程退出后整个换掉 .app bundle 并重新拉起。
+    ///
+    /// 三个和 Windows 不同的地方，都是实测层面的取舍：
+    ///   · 等的是**进程消失**（pgrep）而不是"文件能不能写"：macOS 上正在运行的 bundle
+    ///     依然可以被 rename，用可写性判断会误以为已经退出、在旧进程还活着时就动手。
+    ///   · 换法是「旧版改名挪走 → 新版放进去 → 成功才删旧版」，任一步失败就把旧版改回来
+    ///     并重新拉起，绝不允许出现「两个都没有」的砖。
+    ///   · 重启走 open 而不是直接 exec 包内二进制，否则新进程拿不到 bundle 身份。
+    /// </summary>
+    public static void ApplyMacInBackground(string stagingDir, string targetDir)
+    {
+        var sh = Path.Combine(Path.GetTempPath(), $"apply_update_{Guid.NewGuid():N}.sh");
+        File.WriteAllText(sh, BuildMacSwapScript(stagingDir, targetDir, dryRun: false), new UTF8Encoding(false));
+
+        // 不用 UseShellExecute：脚本要能在父进程退出后继续活着，
+        // bash 不是 TraeTools，pgrep -x TraeTools 不会把它自己算成待等的旧进程。
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "/bin/bash",
+            Arguments = $"\"{sh}\"",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        });
+        // 脚本自身由它最后一步 rm 掉暂存目录来收尾；这里不删，否则会被提前回收。
+    }
+
+    /// <summary>
+    /// 生成 macOS 换包脚本。抽成独立方法是为了让 --update-swap-selftest 能跑**同一份**
+    /// 脚本 —— 更新器是唯一能把用户现有安装搞坏的功能，脚本逻辑不能只靠读代码验收。
+    /// dryRun 只跳过 open（拉起假 bundle），文件动作与生产完全一致。
+    /// </summary>
+    internal static string BuildMacSwapScript(string stagingDir, string targetDir, bool dryRun)
+    {
+        return $$"""
+            #!/bin/bash
+            STAGE="{{stagingDir}}"
+            DST="{{targetDir}}"
+            APP="TraeTools.app"
+            TARGET="$DST/$APP"
+            OLD="$DST/$APP.~old"
+            DRY={{(dryRun ? 1 : 0)}}
+
+            relaunch() { [ "$DRY" = "1" ] || open "$1" 2>/dev/null; }
+
+            # 等旧进程退出，最多 60s。判据用 pgrep 而不是"文件能不能写"：
+            # macOS 上正在运行的 bundle 依然可被 rename，用可写性会误判成已退出。
+            for i in $(seq 1 240); do
+              pgrep -x TraeTools >/dev/null 2>&1 || break
+              sleep 0.25
+            done
+
+            rm -rf "$OLD"
+            if [ -d "$TARGET" ] && ! mv "$TARGET" "$OLD" 2>/dev/null; then
+              # 旧版挪不动 = 安装目录不可写。原样重启旧版，不能把新版丢在半路。
+              echo "swap: 无法移动旧版，目录不可写" >&2
+              relaunch "$TARGET"
+              exit 1
+            fi
+
+            if mv "$STAGE/$APP" "$TARGET" 2>/dev/null; then
+              rm -rf "$OLD" "$STAGE"
+              echo "swap: ok" >&2
+              relaunch "$TARGET"
+              exit 0
+            fi
+
+            # 新版没放进去：回滚旧版，绝不允许出现「两个都没有」
+            echo "swap: 新版放入失败，回滚旧版" >&2
+            if [ -d "$OLD" ]; then
+              mv "$OLD" "$TARGET" 2>/dev/null
+              relaunch "$TARGET"
+            fi
+            exit 1
+            """;
     }
 }

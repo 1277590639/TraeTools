@@ -900,15 +900,6 @@ public partial class SettingsViewModel : ViewModelBase
             PushStatus = "正在获取或安装更新，请稍候；完成后可再次检查。";
             return;
         }
-        // UpdaterService 找的是 TraeTools-win-x64.zip 并原子替换 .exe，
-        // macOS 上既选不到对的包也换不了正在运行的 .app。这里明确告知而不是让它跑一半炸掉。
-        if (!OperatingSystem.IsWindows())
-        {
-            PushStatus = "macOS 版暂不支持应用内自动更新。请到 "
-                + "https://github.com/YYY2579/TraeTools/releases 下载对应架构的 "
-                + "TraeTools-macos-*.dmg，打开后把 TraeTools 拖进 Applications 覆盖即可，账号数据不受影响。";
-            return;
-        }
         UpdateChecking = true;
         try
         {
@@ -935,13 +926,14 @@ public partial class SettingsViewModel : ViewModelBase
                 return;
             }
 
-            var currentExe = Environment.ProcessPath;
-            if (string.IsNullOrEmpty(currentExe))
+            // 目标目录由 UpdaterService 按平台决定：Windows 是程序所在目录，
+            // macOS 是外层 .app bundle 的父目录（替换单位是整个 bundle）。
+            var destDir = UpdaterService.InstallTargetDir();
+            if (string.IsNullOrEmpty(destDir))
             {
                 PushStatus = "无法定位当前程序路径，更新中止";
                 return;
             }
-            var destDir = Path.GetDirectoryName(currentExe)!;
 
             // 更新包先下到独立临时目录（不污染安装目录），校验通过后再解到安装目录内的暂存目录
             var pkgDir = Path.Combine(Path.GetTempPath(), "TraeTools_update_" + Guid.NewGuid().ToString("N"));

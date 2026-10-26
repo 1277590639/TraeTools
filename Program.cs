@@ -1,5 +1,6 @@
 using Avalonia;
 using System;
+using System.Diagnostics;
 using System.Net.Http;
 using System.Threading;
 
@@ -36,6 +37,11 @@ sealed class Program
         if (Array.Exists(args, a => a == "--net-selftest"))
         {
             Environment.Exit(RunNetSelftest());
+            return;
+        }
+        if (Array.Exists(args, a => a == "--update-swap-selftest"))
+        {
+            Environment.Exit(RunUpdateSwapSelftest());
             return;
         }
 
@@ -240,6 +246,175 @@ sealed class Program
         {
             return NetProbeResult.Unreachable;
         }
+    }
+
+    /// <summary>
+    /// 应用内更新的换包自检。更新器是唯一能把用户现有安装直接搞坏的模块，
+    /// 不能只靠读代码验收：这里用真实的替换脚本和真实的 hdiutil/ditto 跑三条路径，
+    /// 其中两条是失败路径 —— 失败时能不能回滚，比成功时能不能装上是更关键的性质。
+    /// </summary>
+    private static int RunUpdateSwapSelftest()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Console.Error.WriteLine("[swap] 非 macOS，跳过");
+            Console.WriteLine("UPDATE SWAP SELFTEST: PASS");
+            return 0;
+        }
+
+        var work = Path.Combine(Path.GetTempPath(), "trae_swap_selftest_" + Guid.NewGuid().ToString("N"));
+        bool ok = true;
+        try
+        {
+            Directory.CreateDirectory(work);
+
+            // ---- 1) 正常换包：新版就位、旧版与暂存清干净、不留 .~old ----
+            var dst1 = Path.Combine(work, "dst1");
+            var stage1 = Path.Combine(work, "stage1");
+            WriteBundle(Path.Combine(dst1, "TraeTools.app"), "old");
+            WriteBundle(Path.Combine(stage1, "TraeTools.app"), "new");
+            var rc1 = RunSwapScript(stage1, dst1);
+            if (rc1 != 0 || ReadMarker(dst1) != "new")
+            {
+                Console.Error.WriteLine($"FAIL 1: 正常换包失败 rc={rc1} marker={ReadMarker(dst1) ?? "<无>"}");
+                ok = false;
+            }
+            else if (Directory.Exists(Path.Combine(dst1, "TraeTools.app.~old")))
+            {
+                Console.Error.WriteLine("FAIL 1: 换包成功但残留 .~old 目录");
+                ok = false;
+            }
+            else Console.Error.WriteLine("OK 1: 正常换包，新版就位且无残留");
+
+            // ---- 2) 失败路径：暂存里没有新版 → 必须回滚，绝不允许两个都没有 ----
+            var dst2 = Path.Combine(work, "dst2");
+            var stage2 = Path.Combine(work, "stage2");
+            WriteBundle(Path.Combine(dst2, "TraeTools.app"), "old");
+            Directory.CreateDirectory(stage2);   // 故意不放 TraeTools.app
+            var rc2 = RunSwapScript(stage2, dst2);
+            var marker2 = ReadMarker(dst2);
+            if (rc2 == 0 || marker2 != "old")
+            {
+                Console.Error.WriteLine($"FAIL 2: 换包失败时未回滚 rc={rc2} marker={marker2 ?? "<旧版丢了>"}");
+                ok = false;
+            }
+            else Console.Error.WriteLine("OK 2: 放入失败 → 旧版已回滚，用户仍可用");
+
+            // ---- 3) 解包：真做一个 dmg，走 hdiutil 挂载 + ditto 复制 ----
+            var bundleSrc = Path.Combine(work, "dmgsrc");
+            WriteBundle(Path.Combine(bundleSrc, "TraeTools.app"), "dmged");
+            WriteLoginHost(Path.Combine(bundleSrc, "TraeTools.app"));
+            var dmg = Path.Combine(work, "fake.dmg");
+            var p = Process.Start(new ProcessStartInfo("/usr/bin/hdiutil")
+            {
+                ArgumentList = { "create", "-quiet", "-srcfolder", bundleSrc, "-ov", "-format", "UDZO", dmg },
+                UseShellExecute = false,
+            });
+            p?.WaitForExit(60_000);
+            if (p is null || p.ExitCode != 0 || !File.Exists(dmg))
+            {
+                Console.Error.WriteLine("FAIL 3: 造测试 dmg 失败，无法验证解包");
+                ok = false;
+            }
+            else
+            {
+                try
+                {
+                    var staged = TraeTools.Services.UpdaterService.PreparePackage(dmg, work);
+                    var got = ReadMarkerPath(Path.Combine(staged, "TraeTools.app"));
+                    if (got != "dmged")
+                    {
+                        Console.Error.WriteLine($"FAIL 3: dmg 解包后 marker={got ?? "<无>"}，期望 dmged");
+                        ok = false;
+                    }
+                    else Console.Error.WriteLine("OK 3: hdiutil 挂载 + ditto 解包正常");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"FAIL 3: PreparePackage 抛异常：{ex.Message}");
+                    ok = false;
+                }
+            }
+
+            // ---- 4) 缺登录宿主的包必须拒绝安装 ----
+            var badSrc = Path.Combine(work, "badsrc");
+            WriteBundle(Path.Combine(badSrc, "TraeTools.app"), "nohost");   // 不写 LoginHost
+            var badDmg = Path.Combine(work, "bad.dmg");
+            var bp = Process.Start(new ProcessStartInfo("/usr/bin/hdiutil")
+            {
+                ArgumentList = { "create", "-quiet", "-srcfolder", badSrc, "-ov", "-format", "UDZO", badDmg },
+                UseShellExecute = false,
+            });
+            bp?.WaitForExit(60_000);
+            try
+            {
+                TraeTools.Services.UpdaterService.PreparePackage(badDmg, work);
+                Console.Error.WriteLine("FAIL 4: 缺登录宿主的包竟然被接受，装完自动登录会静默退化");
+                ok = false;
+            }
+            catch (InvalidDataException)
+            {
+                Console.Error.WriteLine("OK 4: 缺登录宿主的包被拒绝");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"FAIL 4: 抛了预期外的异常 {ex.GetType().Name}：{ex.Message}");
+                ok = false;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"FAIL: 自检异常 {ex.GetType().Name}: {ex.Message}");
+            ok = false;
+        }
+        finally
+        {
+            try { Directory.Delete(work, recursive: true); } catch { /* 临时目录残留无害 */ }
+        }
+
+        Console.WriteLine(ok ? "UPDATE SWAP SELFTEST: PASS" : "UPDATE SWAP SELFTEST: FAIL");
+        return ok ? 0 : 1;
+    }
+
+    private static void WriteBundle(string appDir, string marker)
+    {
+        var macos = Path.Combine(appDir, "Contents", "MacOS");
+        Directory.CreateDirectory(macos);
+        File.WriteAllText(Path.Combine(macos, "marker.txt"), marker);
+    }
+
+    private static void WriteLoginHost(string appDir)
+    {
+        var host = Path.Combine(appDir, "Contents", "MacOS", "TraeTools.LoginHost");
+        File.WriteAllText(host, "#!/bin/sh\nexit 3\n");
+        File.SetUnixFileMode(host, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+    }
+
+    private static string? ReadMarker(string dst) => ReadMarkerPath(Path.Combine(dst, "TraeTools.app"));
+
+    private static string? ReadMarkerPath(string appDir)
+    {
+        var f = Path.Combine(appDir, "Contents", "MacOS", "marker.txt");
+        return File.Exists(f) ? File.ReadAllText(f).Trim() : null;
+    }
+
+    private static int RunSwapScript(string staging, string dst)
+    {
+        var sh = Path.Combine(Path.GetTempPath(), $"swaptest_{Guid.NewGuid():N}.sh");
+        File.WriteAllText(sh, TraeTools.Services.UpdaterService.BuildMacSwapScript(staging, dst, dryRun: true));
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo("/bin/bash")
+            {
+                Arguments = $"\"{sh}\"",
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            });
+            p?.WaitForExit(120_000);
+            if (p is not null) Console.Error.Write(p.StandardError.ReadToEnd());
+            return p?.ExitCode ?? -1;
+        }
+        finally { try { File.Delete(sh); } catch { /* 忽略 */ } }
     }
 
     /// <summary>
