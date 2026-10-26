@@ -2,7 +2,10 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <!-- P2-2：升到 net10.0-windows（SDK 10.0.401 已装），为 PublishAot 做准备 -->
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <!-- macOS 移植探路：Windows 专用 TFM 放开为跨平台 TFM。
+         原先的 net10.0-windows 只为 Registry / ProtectedData 提供 API，
+         二者现在都由显式 PackageReference 提供，不再依赖 Windows 版 TFM。 -->
+    <TargetFramework>net10.0</TargetFramework>
     <!-- P2-1：不再使用 WindowsForms（NativeAOT 硬阻塞之一）；登录窗口已拆到独立 TraeTools.LoginHost 项目 -->
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -80,6 +83,8 @@
     <PackageReference Include="Sodium.Core" Version="1.4.1" />
     <!-- DPAPI：原先由 Microsoft.WindowsDesktop.App（UseWindowsForms）间接提供，拆掉 WinForms 后需显式引用 -->
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.*" />
+    <!-- 跨平台 TFM 后 Registry 不再随 Windows 版 TFM 隐式提供；AutoStartManager 仍在用（仅 Windows 生效） -->
+    <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
     <!-- P2-1：Microsoft.Web.WebView2（NativeAOT 硬阻塞之二）已随登录窗口移到 TraeTools.LoginHost 项目 -->
   </ItemGroup>
 </Project>

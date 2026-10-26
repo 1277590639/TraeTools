@@ -1,0 +1,75 @@
+name: macOS Port Probe
+
+# 探路构建：验证主程序能否在 macOS 上编译，把真实错误清单收集回来。
+# 只手动触发，不发 Release，不影响 main 的构建与用户。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: osx-x64 编译探路
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Toolchain info
+        run: |
+          sw_vers
+          uname -m
+          dotnet --info
+
+      # 先只放开平台差异：单文件 / 裁剪 / AOT 都会把真正的跨平台编译错误淹掉。
+      - name: Publish osx-x64
+        continue-on-error: true
+        run: >
+          dotnet publish TraeTools.csproj
+          -c Release
+          -r osx-x64
+          --self-contained true
+          -p:PublishSingleFile=false
+          -p:PublishTrimmed=false
+          -p:EnableAot=false
+          -o out-macos
+          2>&1 | tee /tmp/publish-osx-x64.log
+
+      # 权威判据：产物二进制必须真的存在。publish 步骤接了 tee，退出码不可信。
+      - name: Gate — binary must exist
+        run: |
+          if [ -f out-macos/TraeTools ]; then
+            echo "OK: 产物已生成"
+            file out-macos/TraeTools
+            du -sh out-macos
+          else
+            echo "FAIL: 没有生成 out-macos/TraeTools，编译未通过"
+            exit 1
+          fi
+
+      - name: Collect error summary
+        if: always()
+        run: |
+          grep -E "error [A-Z]+[0-9]+" /tmp/publish-osx-x64.log \
+            | sed -E 's/.*(error [A-Z]+[0-9]+):/\1:/' \
+            | sort | uniq -c | sort -rn > /tmp/errors-summary.txt || true
+          echo "--- 去重后的错误种类 ---"
+          cat /tmp/errors-summary.txt
+          echo "--- 错误总数 ---"
+          grep -cE "error [A-Z]+[0-9]+" /tmp/publish-osx-x64.log || echo 0
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-osx-x64-logs
+          path: |
+            /tmp/publish-osx-x64.log
+            /tmp/errors-summary.txt
