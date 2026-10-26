@@ -23,6 +23,9 @@ struct Options {
     var selfTest: Bool
     /// 仅测试用：给一个 JWT，打印解析出的 data.id 后退出，不建窗口。
     var jwtUidProbe: String?
+    /// 仅测试用：用该地址代替 trae.cn 作为起始页，让本地假页面能端到端跑通
+    /// 「读 localStorage token → 校验归属 → 抓 session cookie → 回写结果」整条链路。
+    var startUrl: String?
 }
 
 func parseArgs(_ args: [String]) -> Options? {
@@ -32,6 +35,7 @@ func parseArgs(_ args: [String]) -> Options? {
     var uid: String?
     var proxy: String?
     var jwtProbe: String?
+    var startUrl: String?
     var debug = false
     var selftest = false
 
@@ -50,6 +54,8 @@ func parseArgs(_ args: [String]) -> Options? {
             if i + 1 < args.count { proxy = args[i + 1]; i += 1 }
         case "--jwt-uid-probe":
             if i + 1 < args.count { jwtProbe = args[i + 1]; i += 1 }
+        case "--start-url":
+            if i + 1 < args.count { startUrl = args[i + 1]; i += 1 }
         case "--debug-capture": debug = true
         case "--selftest": selftest = true
         default: break
@@ -65,7 +71,8 @@ func parseArgs(_ args: [String]) -> Options? {
         expectedUid: (trimmed?.isEmpty == false) ? trimmed : nil,
         proxyServer: proxy,
         debugCapture: debug, selfTest: selftest,
-        jwtUidProbe: jwtProbe)
+        jwtUidProbe: jwtProbe,
+        startUrl: startUrl)
 }
 
 // MARK: - Token 判定（对齐 TokenUtils）
@@ -207,7 +214,7 @@ final class HostController: NSObject, NSWindowDelegate, WKNavigationDelegate {
     }
 
     func run() -> Never {
-        let target = "https://www.trae.cn/dashboard"
+        let target = opts.startUrl ?? "https://www.trae.cn/dashboard"
         guard let url = URL(string: target) else {
             writeError(opts.outFile, "登录地址无效：\(target)")
             exit(4)

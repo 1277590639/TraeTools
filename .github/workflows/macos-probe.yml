@@ -17,6 +17,8 @@ on:
       - "macos-loginhost/**"
       - ".github/pkg_dotnet_dmg.sh"
       - ".github/verify_macos_artifacts.sh"
+      - ".github/test_login_capture.sh"
+      - ".github/fake_trae_page.py"
       - ".github/workflows/macos-probe.yml"
 
 permissions:

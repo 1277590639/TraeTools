@@ -63,6 +63,12 @@ got=$("$HOST" --user-data-dir "$WORK/ud" --out "$WORK/p.json" --jwt-uid-probe "n
 [ "$got" = "<none>" ] || fail "非 JWT 应得 <none>，实际 '$got'"
 ok "JWT 归属解析与 TokenUtils.ParseAccountUid 语义一致"
 
+# ---------- 2.5 登录捕获链路端到端 ----------
+# 前面验的是进程契约，这里验的是「真的能从 WKWebView 里把凭据捞出来」——
+# 用本地假 Trae 页复现 localStorage token + X-Cloudide-Session cookie，
+# 覆盖正常登录 / 跨账号拒收 / 无 session 三条路径。
+bash "$(dirname "$0")/test_login_capture.sh" "$HOST" || fail "登录捕获链路端到端验证失败"
+
 # ---------- 3. 凭据加密往返 ----------
 # 换加密机制后最容易「静默坏掉」：Protect 成功但 Unprotect 取不回来，
 # 界面上只表现为每次启动都要重新登录。
