@@ -92,6 +92,16 @@ jobs:
       - name: Smoke — 从 .app 启动并截图
         run: bash .github/smoke_macos_app.sh ./TraeTools.app /tmp/smoke
 
+      # 把 dmg 也存成产物：分支上的包要能真的装起来试，否则验收只停在「CI 说它好」。
+      - name: Upload dmg artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TraeTools-macos-x64-dmg
+          path: TraeTools-macos-x64.dmg
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload smoke evidence
         if: always()
         uses: actions/upload-artifact@v4
