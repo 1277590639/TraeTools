@@ -15,6 +15,7 @@ on:
       - "**/*.cs"
       - "**/*.axaml"
       - "macos-loginhost/**"
+      - ".github/pkg_dotnet_dmg.sh"
       - ".github/workflows/macos-probe.yml"
 
 permissions:
@@ -83,20 +84,29 @@ jobs:
       - name: Login host — 构建 Swift 宿主
         if: success()
         run: |
+          set +e   # 本步骤故意探测非零退出码，GitHub 默认的 bash -e 会在捕获 $? 前就中止脚本
           cd macos-loginhost
           swift build -c release --arch x86_64 2>&1 | tee /tmp/host-build.log || true
           # tee 会吞退出码，判据只看二进制到底有没有产出。
-          # --arch 下产物落在 .build/<triple>/release/，别把路径写死。
-          BIN=$(find .build -type f -name LoginHost | head -1)
+          # --arch 下产物在 .build/<triple>/release/，且同目录树里还有个同名 dSYM
+          # 调试符号文件（不是可执行文件），必须排掉，否则会把 dSYM 当宿主打包。
+          BIN=$(find .build -type f -name LoginHost -not -path '*.dSYM/*' | head -1)
           [ -n "$BIN" ] || { echo "FAIL: 未产出宿主二进制"; exit 1; }
           echo "二进制: $BIN"
           cp "$BIN" ../out-macos/TraeTools.LoginHost
           chmod +x ../out-macos/TraeTools.LoginHost
           file ../out-macos/TraeTools.LoginHost
+          # 复制对了还不够，得证明它真能执行：dSYM 也叫 LoginHost，光看文件名看不出来。
+          # 无参调用应走「参数错误」分支返回 3；若拿到 126/127 说明根本不可执行。
+          ../out-macos/TraeTools.LoginHost >/dev/null 2>&1
+          rc=$?
+          [ "$rc" = "3" ] || { echo "FAIL: 宿主不可执行或参数处理异常，exit=$rc"; exit 1; }
+          echo "OK 宿主可执行"
 
       - name: Login host — 契约自检
         if: success()
         run: |
+          set +e   # 同上：这些断言就是要拿非零退出码
           HOST=./out-macos/TraeTools.LoginHost
           fail() { echo "FAIL: $*"; exit 1; }
 
@@ -158,11 +168,27 @@ jobs:
 
       # 编译通过不等于界面能出来。这里真的把 App 跑起来、截图、数窗口，
       # 把图作为 artifact 传回来 —— 这是不装 SDK 也能拿到「mac 上长什么样」的唯一实证。
-      - name: Smoke — 启动并截图
+      - name: Package — 组装 .app 并打 dmg
+        if: success()
+        run: |
+          set +e
+          bash .github/pkg_dotnet_dmg.sh x86_64 "$(python3 -c "import json;print(json.load(open('version.json'))['version'])")" out-macos \
+            2>&1 | tee /tmp/pkg.log
+          # 判据用产物，不用管道退出码。
+          test -f TraeTools.app/Contents/MacOS/TraeTools || { echo "FAIL: .app 里没主程序"; exit 1; }
+          test -f TraeTools.app/Contents/MacOS/TraeTools.LoginHost || { echo "FAIL: .app 里没登录宿主"; exit 1; }
+          test -f TraeTools-macos-x64.dmg || { echo "FAIL: 没产出 dmg"; exit 1; }
+          plutil -lint TraeTools.app/Contents/Info.plist
+          codesign --verify --deep --strict TraeTools.app && echo "OK 签名密封完整"
+          ls -lh TraeTools-macos-x64.dmg
+
+      # 从 .app 内部启动，而不是裸 publish 目录：装进 bundle 后 AppContext.BaseDirectory
+      # 会变，登录宿主的查找路径也随之改变，只有包内启动才算数。
+      - name: Smoke — 从 .app 内启动并截图
         if: success()
         run: |
           mkdir -p /tmp/smoke
-          ./out-macos/TraeTools > /tmp/smoke/app.log 2>&1 &
+          ./TraeTools.app/Contents/MacOS/TraeTools > /tmp/smoke/app.log 2>&1 &
           APP_PID=$!
           # 轮询而不是固定等待：runner 是 Apple Silicon，x86_64 产物走 Rosetta 转译，
           # 冷启动耗时抖动很大；固定 15s 分不清「还没起来」和「永远起不来」。
