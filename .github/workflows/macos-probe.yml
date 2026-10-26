@@ -182,23 +182,28 @@ jobs:
           codesign --verify --deep --strict TraeTools.app && echo "OK 签名密封完整"
           ls -lh TraeTools-macos-x64.dmg
 
-      # 从 .app 内部启动，而不是裸 publish 目录：装进 bundle 后 AppContext.BaseDirectory
-      # 会变，登录宿主的查找路径也随之改变，只有包内启动才算数。
-      - name: Smoke — 从 .app 内启动并截图
+      # 用 open 启动，而不是直接 exec 包内二进制：裸执行会绕过 LaunchServices，
+      # CFBundleName 不生效，菜单栏会显示成 Avalonia 的默认名 —— 用户双击时不会这样，
+      # 所以只有走 open 才是真实分发形态。
+      - name: Smoke — 从 .app 启动并截图
         if: success()
         run: |
+          set +e
           mkdir -p /tmp/smoke
-          ./TraeTools.app/Contents/MacOS/TraeTools > /tmp/smoke/app.log 2>&1 &
-          APP_PID=$!
-          # 轮询而不是固定等待：runner 是 Apple Silicon，x86_64 产物走 Rosetta 转译，
-          # 冷启动耗时抖动很大；固定 15s 分不清「还没起来」和「永远起不来」。
+          open -n --stdout /tmp/smoke/app.log --stderr /tmp/smoke/app.log ./TraeTools.app
+          APP_PID=""
+          for t in 1 2 3 4 5 6 7 8; do
+            sleep 2
+            APP_PID=$(pgrep -x TraeTools | head -1)
+            [ -n "$APP_PID" ] && break
+          done
+          [ -n "$APP_PID" ] || { echo "FAIL: open 后 16s 内找不到 TraeTools 进程"; cat /tmp/smoke/app.log; exit 1; }
+          echo "pid=$APP_PID"
           WC=0
           for i in $(seq 1 20); do
             sleep 3
             if ! kill -0 "$APP_PID" 2>/dev/null; then
-              echo "FAIL: 进程在第 $((i*3))s 退出"
-              cat /tmp/smoke/app.log
-              exit 1
+              echo "FAIL: 进程在第 $((i*3+3))s 退出"; cat /tmp/smoke/app.log; exit 1
             fi
             if osascript -e "tell application \"System Events\" to get count of windows of (first process whose unix id is $APP_PID)" \
                 > /tmp/smoke/window-count.txt 2>/tmp/smoke/osascript.err; then
@@ -206,26 +211,21 @@ jobs:
             else
               WC=unknown
             fi
-            echo "t=$((i*3))s windows=$WC"
-            # 只在拿到真实正整数窗口数时才停；unknown 继续轮询，
-            # 否则第 3s 一次偶发失败会让截图拍早。
+            echo "t=$((i*3+3))s windows=$WC"
             if [[ "$WC" =~ ^[0-9]+$ ]] && [ "$WC" -gt 0 ]; then break; fi
           done
-          echo "ELAPSED_TO_WINDOW: 最多 $((20*3))s，末次 windows=$WC"
           screencapture -x /tmp/smoke/screen-15s.png
-          ps -o pid,stat,%cpu,rss,etime -p "$APP_PID" || true
-          if [ "$WC" = "unknown" ]; then
-            echo "窗口数 unknown（osascript 失败，多为无辅助功能权限），仅以截图为准"
-            cat /tmp/smoke/osascript.err
-          fi
-          echo "--- app.log ---"
-          cat /tmp/smoke/app.log
-          kill "$APP_PID" 2>/dev/null || true
-          if [ "$WC" = "0" ]; then
-            echo "FAIL: 轮询满 60s 仍零窗口，UI 没起来（看 app.log 里 [boot] 打到哪一步）"
-            exit 1
-          fi
-
+          # 品牌名：菜单栏第一个菜单项就是应用名，取不到就还是 "Avalonia Application"。
+          osascript -e "tell application \"System Events\" to get name of menu bar item 1 of menu bar 1 of (first process whose unix id is $APP_PID)" \
+            > /tmp/smoke/app-menu-name.txt 2>/dev/null
+          echo "应用菜单名: $(cat /tmp/smoke/app-menu-name.txt)"
+          echo "--- app.log ---"; cat /tmp/smoke/app.log
+          pkill -x TraeTools 2>/dev/null
+          if [ "$WC" = "0" ]; then echo "FAIL: 轮询满 63s 仍零窗口"; exit 1; fi
+          case "$(cat /tmp/smoke/app-menu-name.txt)" in
+            *TraeTools*) echo "OK 应用名已生效" ;;
+            *) echo "FAIL: 菜单栏应用名不是 TraeTools，实际 '$(cat /tmp/smoke/app-menu-name.txt)'"; exit 1 ;;
+          esac
       - name: Upload smoke evidence
         if: always()
         uses: actions/upload-artifact@v4
