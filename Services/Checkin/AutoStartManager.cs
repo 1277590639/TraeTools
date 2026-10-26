@@ -137,16 +137,17 @@ internal static class AutoStartManager
     private static string Xml(string raw) => raw
         .Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
 
-    private static void RunLaunchctl(string verb, string target)
+    private static void RunLaunchctl(params string[] args)
     {
         try
         {
-            using var p = Process.Start(new ProcessStartInfo("/bin/launchctl")
+            var psi = new ProcessStartInfo("/bin/launchctl")
             {
-                ArgumentList = { verb, target },
                 RedirectStandardError = true,
                 UseShellExecute = false,
-            });
+            };
+            foreach (var a in args) psi.ArgumentList.Add(a);
+            using var p = Process.Start(psi);
             p?.WaitForExit(5000);
         }
         catch { /* launchctl 不可用不影响 plist 已写入的事实 */ }
