@@ -900,6 +900,15 @@ public partial class SettingsViewModel : ViewModelBase
             PushStatus = "正在获取或安装更新，请稍候；完成后可再次检查。";
             return;
         }
+        // UpdaterService 找的是 TraeTools-win-x64.zip 并原子替换 .exe，
+        // macOS 上既选不到对的包也换不了正在运行的 .app。这里明确告知而不是让它跑一半炸掉。
+        if (!OperatingSystem.IsWindows())
+        {
+            PushStatus = "macOS 版暂不支持应用内自动更新。请到 "
+                + "https://github.com/YYY2579/TraeTools/releases 下载对应架构的 "
+                + "TraeTools-macos-*.dmg，打开后把 TraeTools 拖进 Applications 覆盖即可，账号数据不受影响。";
+            return;
+        }
         UpdateChecking = true;
         try
         {

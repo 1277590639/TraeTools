@@ -185,6 +185,28 @@ jobs:
       # 用 open 启动，而不是直接 exec 包内二进制：裸执行会绕过 LaunchServices，
       # CFBundleName 不生效，菜单栏会显示成 Avalonia 的默认名 —— 用户双击时不会这样，
       # 所以只有走 open 才是真实分发形态。
+      # 用 bundle 内的那份二进制跑：只有这时 Environment.ProcessPath 才含
+      # /Contents/MacOS/，才会走到「用 /usr/bin/open -a 拉起 bundle」的分支。
+      - name: Autostart selftest — LaunchAgent 往返
+        if: success()
+        run: |
+          set +e
+          mkdir -p /tmp/smoke
+          ./TraeTools.app/Contents/MacOS/TraeTools --autostart-selftest > /tmp/smoke/autostart.log 2>&1
+          cat /tmp/smoke/autostart.log
+          grep -q "AUTOSTART SELFTEST: PASS" /tmp/smoke/autostart.log || { echo "FAIL: 自启往返未通过"; exit 1; }
+          sed -n '/\[autostart\] begin-content/,/\[autostart\] end-content/p' /tmp/smoke/autostart.log \
+            | sed '1d;$d' > /tmp/smoke/launchagent.plist
+          [ -s /tmp/smoke/launchagent.plist ] || { echo "FAIL: 没抓到 plist 内容"; exit 1; }
+          # 文件存在不等于格式合法：格式错了 launchd 静默忽略，用户端就是「勾了没反应」。
+          plutil -lint /tmp/smoke/launchagent.plist || { echo "FAIL: plist 格式非法"; exit 1; }
+          plutil -p /tmp/smoke/launchagent.plist
+          grep -q "/usr/bin/open" /tmp/smoke/launchagent.plist \
+            || { echo "FAIL: 没走 open -a，自启会绕过 LaunchServices 丢了 bundle 身份"; exit 1; }
+          [ ! -f "$HOME/Library/LaunchAgents/com.traetools.desktop.plist" ] \
+            || { echo "FAIL: 自检没把状态复原，plist 还留着"; exit 1; }
+          echo "OK LaunchAgent 合法且已复原"
+
       - name: Smoke — 从 .app 启动并截图
         if: success()
         run: |

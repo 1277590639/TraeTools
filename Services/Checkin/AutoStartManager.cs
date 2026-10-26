@@ -18,6 +18,9 @@ internal static class AutoStartManager
     /// <summary>当前机制名称（仅用于界面文案）。</summary>
     public static string MechanismName => OperatingSystem.IsWindows() ? "注册表 Run 项" : "LaunchAgent";
 
+    /// <summary>配置落点：注册表键路径，或 LaunchAgent plist 的完整路径。</summary>
+    public static string ConfigLocation => OperatingSystem.IsWindows() ? RunKeyPath : LaunchAgentPath;
+
     /// <summary>是否已注册开机自启动。</summary>
     public static bool IsEnabled()
     {
