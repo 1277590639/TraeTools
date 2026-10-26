@@ -75,6 +75,41 @@ jobs:
           echo "--- 错误总数 ---"
           grep -cE "error [A-Z]+[0-9]+" /tmp/publish-osx-x64.log || echo 0
 
+      # 编译通过不等于界面能出来。这里真的把 App 跑起来、截图、数窗口，
+      # 把图作为 artifact 传回来 —— 这是不装 SDK 也能拿到「mac 上长什么样」的唯一实证。
+      - name: Smoke — 启动并截图
+        if: success()
+        run: |
+          mkdir -p /tmp/smoke
+          ./out-macos/TraeTools > /tmp/smoke/app.log 2>&1 &
+          APP_PID=$!
+          sleep 15
+          if ! kill -0 "$APP_PID" 2>/dev/null; then
+            echo "FAIL: 进程已退出，未存活到 15s"
+            echo "--- app.log ---"
+            cat /tmp/smoke/app.log
+            exit 1
+          fi
+          echo "ALIVE pid=$APP_PID"
+          ps -o pid,stat,%cpu,rss -p "$APP_PID" || true
+          screencapture -x /tmp/smoke/screen-15s.png
+          # 数窗口需要辅助功能权限，拿不到就当未知，不能因此判死。
+          osascript -e "tell application \"System Events\" to get count of windows of (first process whose unix id is $APP_PID)" \
+            > /tmp/smoke/window-count.txt 2>/tmp/smoke/osascript.err \
+            && echo "窗口数: $(cat /tmp/smoke/window-count.txt)" \
+            || { echo "窗口数: 未知（osascript 无权限或失败）"; cat /tmp/smoke/osascript.err; }
+          echo "--- app.log 尾部 ---"
+          tail -40 /tmp/smoke/app.log
+          kill "$APP_PID" 2>/dev/null || true
+
+      - name: Upload smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-smoke
+          path: /tmp/smoke/
+          if-no-files-found: warn
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4

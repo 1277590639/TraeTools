@@ -81,10 +81,9 @@
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.*" />
     <PackageReference Include="Sodium.Core" Version="1.4.1" />
-    <!-- DPAPI：原先由 Microsoft.WindowsDesktop.App（UseWindowsForms）间接提供，拆掉 WinForms 后需显式引用 -->
+    <!-- DPAPI：原先由 Microsoft.WindowsDesktop.App（UseWindowsForms）间接提供，拆掉 WinForms 后需显式引用。
+         注意：非 Windows 上 ProtectedData 会抛 PlatformNotSupportedException，mac 分支不得走到这里。 -->
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.*" />
-    <!-- 跨平台 TFM 后 Registry 不再随 Windows 版 TFM 隐式提供；AutoStartManager 仍在用（仅 Windows 生效） -->
-    <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
     <!-- P2-1：Microsoft.Web.WebView2（NativeAOT 硬阻塞之二）已随登录窗口移到 TraeTools.LoginHost 项目 -->
   </ItemGroup>
 </Project>
