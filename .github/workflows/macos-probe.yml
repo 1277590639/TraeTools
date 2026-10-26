@@ -1,6 +1,6 @@
 name: macOS Port Probe
 
-# 探路构建：验证主程序能否在 macOS 上编译，把真实错误清单收集回来。
+# 探路/验证构建：编译 macOS 版、组装 .app、跑统一验收脚本、真机启动截图。
 # 只在 macos-avalonia 分支上由 push 触发，不发 Release，不影响 main 的构建与用户。
 #
 # 不用 workflow_dispatch：GitHub 只注册默认分支上存在的 workflow，
@@ -16,6 +16,7 @@ on:
       - "**/*.axaml"
       - "macos-loginhost/**"
       - ".github/pkg_dotnet_dmg.sh"
+      - ".github/verify_macos_artifacts.sh"
       - ".github/workflows/macos-probe.yml"
 
 permissions:
@@ -23,7 +24,7 @@ permissions:
 
 jobs:
   probe:
-    name: osx-x64 编译探路
+    name: osx-x64 构建与验收
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -42,7 +43,6 @@ jobs:
 
       # 先只放开平台差异：单文件 / 裁剪 / AOT 都会把真正的跨平台编译错误淹掉。
       - name: Publish osx-x64
-        continue-on-error: true
         run: >
           dotnet publish TraeTools.csproj
           -c Release
@@ -54,11 +54,10 @@ jobs:
           -o out-macos
           2>&1 | tee /tmp/publish-osx-x64.log
 
-      # 权威判据：产物二进制必须真的存在。publish 步骤接了 tee，退出码不可信。
-      - name: Gate — binary must exist
+      # 权威判据：产物二进制必须真的存在且可执行。publish 接了 tee，退出码不可信。
+      - name: Gate — 主程序二进制
         run: |
           if [ -f out-macos/TraeTools ]; then
-            echo "OK: 产物已生成"
             file out-macos/TraeTools
             du -sh out-macos
           else
@@ -72,212 +71,24 @@ jobs:
           grep -E "error [A-Z]+[0-9]+" /tmp/publish-osx-x64.log \
             | sed -E 's/.*(error [A-Z]+[0-9]+):/\1:/' \
             | sort | uniq -c | sort -rn > /tmp/errors-summary.txt || true
-          echo "--- 去重后的错误种类 ---"
-          cat /tmp/errors-summary.txt
           echo "--- 错误总数 ---"
           grep -cE "error [A-Z]+[0-9]+" /tmp/publish-osx-x64.log || echo 0
 
-      # 加密换机制后最容易「静默坏掉」：Protect 成功但 Unprotect 取不回来，
-      # 表现是每次启动都要重新登录。GUI 冒烟走不到这一步，所以单独探。
-      # 登录宿主是独立进程，主程序只靠「参数 + --out 回写 JSON」和它通信，
-      # 所以契约必须在 CI 里逐条钉死，包括失败路径——尤其不能让它静默忽略代理参数。
-      - name: Login host — 构建 Swift 宿主
-        if: success()
+      - name: Build login host (Swift)
+        run: bash .github/build_login_host.sh x86_64 out-macos
+
+      - name: Package .app + dmg
         run: |
-          set +e   # 本步骤故意探测非零退出码，GitHub 默认的 bash -e 会在捕获 $? 前就中止脚本
-          cd macos-loginhost
-          swift build -c release --arch x86_64 2>&1 | tee /tmp/host-build.log || true
-          # tee 会吞退出码，判据只看二进制到底有没有产出。
-          # --arch 下产物在 .build/<triple>/release/，且同目录树里还有个同名 dSYM
-          # 调试符号文件（不是可执行文件），必须排掉，否则会把 dSYM 当宿主打包。
-          BIN=$(find .build -type f -name LoginHost -not -path '*.dSYM/*' | head -1)
-          [ -n "$BIN" ] || { echo "FAIL: 未产出宿主二进制"; exit 1; }
-          echo "二进制: $BIN"
-          cp "$BIN" ../out-macos/TraeTools.LoginHost
-          chmod +x ../out-macos/TraeTools.LoginHost
-          file ../out-macos/TraeTools.LoginHost
-          # 复制对了还不够，得证明它真能执行：dSYM 也叫 LoginHost，光看文件名看不出来。
-          # 无参调用应走「参数错误」分支返回 3；若拿到 126/127 说明根本不可执行。
-          ../out-macos/TraeTools.LoginHost >/dev/null 2>&1
-          rc=$?
-          [ "$rc" = "3" ] || { echo "FAIL: 宿主不可执行或参数处理异常，exit=$rc"; exit 1; }
-          echo "OK 宿主可执行"
+          VERSION="$(python3 -c "import json;print(json.load(open('version.json'))['version'])")"
+          bash .github/pkg_dotnet_dmg.sh x86_64 "$VERSION" out-macos
 
-      - name: Login host — 契约自检
-        if: success()
-        run: |
-          set +e   # 同上：这些断言就是要拿非零退出码
-          HOST=./out-macos/TraeTools.LoginHost
-          fail() { echo "FAIL: $*"; exit 1; }
+      - name: Verify — 统一验收脚本
+        run: bash .github/verify_macos_artifacts.sh ./TraeTools.app/Contents/MacOS
 
-          # 1) 参数不全 → 3
-          $HOST --out /tmp/none.json; rc=$?
-          [ "$rc" = "3" ] || fail "缺 --user-data-dir 时退出码应为 3，实际 $rc"
-          echo "OK 缺参数 → exit 3"
-
-          # 2) --selftest → 0 且回写主程序认得的结构
-          OUT=/tmp/host-selftest.json
-          $HOST --user-data-dir /tmp/hostud --out "$OUT" --selftest; rc=$?
-          [ "$rc" = "0" ] || fail "selftest 退出码应为 0，实际 $rc"
-          [ -f "$OUT" ] || fail "selftest 没写结果文件"
-          cat "$OUT"
-          python3 -c "
-          import json,sys
-          d=json.load(open('$OUT'))
-          assert isinstance(d.get('token'),str) and d['token'].strip(), 'token 缺失或非字符串'
-          assert isinstance(d.get('session'),str), 'session 缺失'
-          assert 'error' not in d, '成功形态不该带 error'
-          print('OK 成功回写结构符合 LoginHostClient.ParseResult')
-          " || exit 1
-
-          # 3) 带代理 → 必须显式失败并回写 error，绝不能静默直连
-          POUT=/tmp/host-proxy.json
-          $HOST --user-data-dir /tmp/hostud --out "$POUT" --proxy-server 127.0.0.1:7890; rc=$?
-          [ "$rc" = "4" ] || fail "不支持代理时应退出 4，实际 $rc"
-          cat "$POUT"
-          python3 -c "
-          import json
-          d=json.load(open('$POUT'))
-          assert isinstance(d.get('error'),str) and d['error'], '必须回写 error 而不是假装成功'
-          assert 'token' not in d
-          print('OK 代理被显式拒绝（未静默直连）')
-          " || exit 1
-
-          # 4) 归属校验探针：证明「另一个账号的 token 会被拒」这条防线是活的，
-          #    而不是解析不出来、永远走放行分支。语义需与 TokenUtils.ParseAccountUid 一致。
-          JWT=$(python3 -c "
-          import base64,json
-          def b64(d): return base64.urlsafe_b64encode(json.dumps(d,separators=(',',':')).encode()).decode().rstrip('=')
-          print(b64({'alg':'HS256'})+'.'+b64({'data':{'id':'7654321098765432'}})+'.sig')
-          ")
-          got=$($HOST --user-data-dir /tmp/hostud --out /tmp/host-probe.json --jwt-uid-probe "$JWT")
-          [ "$got" = "7654321098765432" ] || fail "JWT 归属解析应得 7654321098765432，实际 '$got'"
-          got=$($HOST --user-data-dir /tmp/hostud --out /tmp/host-probe.json --jwt-uid-probe "not-a-jwt")
-          [ "$got" = "<none>" ] || fail "非 JWT 应得 <none>，实际 '$got'"
-          echo "OK 归属校验探针"
-
-      - name: Crypto selftest — 凭据加密往返
-        if: success()
-        run: |
-          mkdir -p /tmp/smoke
-          ./out-macos/TraeTools --crypto-selftest > /tmp/smoke/crypto.log 2>&1 || true
-          cat /tmp/smoke/crypto.log
-          # tee/|| 都会吞掉退出码，判据只认输出里的 PASS。
-          grep -q "CRYPTO SELFTEST: PASS" /tmp/smoke/crypto.log \
-            || { echo "FAIL: 加密自检未通过"; exit 1; }
-
-      # 编译通过不等于界面能出来。这里真的把 App 跑起来、截图、数窗口，
-      # 把图作为 artifact 传回来 —— 这是不装 SDK 也能拿到「mac 上长什么样」的唯一实证。
-      - name: Package — 组装 .app 并打 dmg
-        if: success()
-        run: |
-          set +e
-          bash .github/pkg_dotnet_dmg.sh x86_64 "$(python3 -c "import json;print(json.load(open('version.json'))['version'])")" out-macos \
-            2>&1 | tee /tmp/pkg.log
-          # 判据用产物，不用管道退出码。
-          test -f TraeTools.app/Contents/MacOS/TraeTools || { echo "FAIL: .app 里没主程序"; exit 1; }
-          test -f TraeTools.app/Contents/MacOS/TraeTools.LoginHost || { echo "FAIL: .app 里没登录宿主"; exit 1; }
-          test -f TraeTools-macos-x64.dmg || { echo "FAIL: 没产出 dmg"; exit 1; }
-          plutil -lint TraeTools.app/Contents/Info.plist
-          codesign --verify --deep --strict TraeTools.app && echo "OK 签名密封完整"
-          ls -lh TraeTools-macos-x64.dmg
-
-      # 用 open 启动，而不是直接 exec 包内二进制：裸执行会绕过 LaunchServices，
-      # CFBundleName 不生效，菜单栏会显示成 Avalonia 的默认名 —— 用户双击时不会这样，
-      # 所以只有走 open 才是真实分发形态。
-      # 用 bundle 内的那份二进制跑：只有这时 Environment.ProcessPath 才含
-      # /Contents/MacOS/，才会走到「用 /usr/bin/open -a 拉起 bundle」的分支。
-      - name: Autostart selftest — LaunchAgent 往返
-        if: success()
-        run: |
-          set +e
-          mkdir -p /tmp/smoke
-          ./TraeTools.app/Contents/MacOS/TraeTools --autostart-selftest > /tmp/smoke/autostart.log 2>&1
-          cat /tmp/smoke/autostart.log
-          grep -q "AUTOSTART SELFTEST: PASS" /tmp/smoke/autostart.log || { echo "FAIL: 自启往返未通过"; exit 1; }
-          sed -n '/\[autostart\] begin-content/,/\[autostart\] end-content/p' /tmp/smoke/autostart.log \
-            | sed '1d;$d' > /tmp/smoke/launchagent.plist
-          [ -s /tmp/smoke/launchagent.plist ] || { echo "FAIL: 没抓到 plist 内容"; exit 1; }
-          # 文件存在不等于格式合法：格式错了 launchd 静默忽略，用户端就是「勾了没反应」。
-          plutil -lint /tmp/smoke/launchagent.plist || { echo "FAIL: plist 格式非法"; exit 1; }
-          plutil -p /tmp/smoke/launchagent.plist
-          grep -q "/usr/bin/open" /tmp/smoke/launchagent.plist \
-            || { echo "FAIL: 没走 open -a，自启会绕过 LaunchServices 丢了 bundle 身份"; exit 1; }
-          [ ! -f "$HOME/Library/LaunchAgents/com.traetools.desktop.plist" ] \
-            || { echo "FAIL: 自检没把状态复原，plist 还留着"; exit 1; }
-          echo "OK LaunchAgent 合法且已复原"
-
+      # 用 open 启动而不是裸 exec：裸执行绕过 LaunchServices，拿不到 bundle 身份，
+      # 用户双击时不会这样，只有走 open 才是真实分发形态。
       - name: Smoke — 从 .app 启动并截图
-        if: success()
-        run: |
-          set +e
-          mkdir -p /tmp/smoke
-          open -n --stdout /tmp/smoke/app.log --stderr /tmp/smoke/app.log ./TraeTools.app
-          APP_PID=""
-          for t in 1 2 3 4 5 6 7 8; do
-            sleep 2
-            APP_PID=$(pgrep -x TraeTools | head -1)
-            [ -n "$APP_PID" ] && break
-          done
-          [ -n "$APP_PID" ] || { echo "FAIL: open 后 16s 内找不到 TraeTools 进程"; cat /tmp/smoke/app.log; exit 1; }
-          echo "pid=$APP_PID"
-          WC=0
-          for i in $(seq 1 20); do
-            sleep 3
-            if ! kill -0 "$APP_PID" 2>/dev/null; then
-              echo "FAIL: 进程在第 $((i*3+3))s 退出"; cat /tmp/smoke/app.log; exit 1
-            fi
-            if osascript -e "tell application \"System Events\" to get count of windows of (first process whose unix id is $APP_PID)" \
-                > /tmp/smoke/window-count.txt 2>/tmp/smoke/osascript.err; then
-              WC=$(tr -d '[:space:]' < /tmp/smoke/window-count.txt)
-            else
-              WC=unknown
-            fi
-            echo "t=$((i*3+3))s windows=$WC"
-            if [[ "$WC" =~ ^[0-9]+$ ]] && [ "$WC" -gt 0 ]; then break; fi
-          done
-          screencapture -x /tmp/smoke/screen-15s.png
-          # 品牌名：应用菜单是加粗显示应用名的那一项。
-          # 不能用 menu bar item 1 —— 那是苹果 logo（实测返回 "Apple"），也不能靠下标，
-          # 所以取全部菜单项名字，看有没有任意一项是 TraeTools。
-          osascript -e "tell application \"System Events\" to get name of every menu bar item of menu bar 1 of (first process whose unix id is $APP_PID)" \
-            > /tmp/smoke/app-menu-names.txt 2>/tmp/smoke/osascript.err
-          echo "菜单栏项: $(cat /tmp/smoke/app-menu-names.txt)"
-          echo "--- app.log ---"; cat /tmp/smoke/app.log
-          pkill -x TraeTools 2>/dev/null
-          if [ "$WC" = "0" ]; then echo "FAIL: 轮询满 63s 仍零窗口"; exit 1; fi
-          case "$(cat /tmp/smoke/app-menu-names.txt)" in
-            *TraeTools*) echo "OK 应用名已生效" ;;
-            *) echo "FAIL: 菜单栏里没有 TraeTools 应用菜单，实际 '$(cat /tmp/smoke/app-menu-names.txt)'"; exit 1 ;;
-          esac
-      # 退出后再启动一次。.NET 在 Unix 上的命名 Mutex 会落地成 /tmp 下的文件，
-      # 若进程退出后残留，第二次启动会走 createdNew=false 分支静默 return ——
-      # 用户看到的就是「关掉之后再也打不开」。这条只能实测，读代码看不出来。
-      - name: Relaunch — 退出后能否再次启动
-        if: success()
-        run: |
-          set +e
-          pkill -x TraeTools; sleep 2
-          open -n --stdout /tmp/smoke/app2.log --stderr /tmp/smoke/app2.log ./TraeTools.app
-          P2=""; W2=""
-          for i in $(seq 1 20); do
-            sleep 3
-            P2=$(pgrep -x TraeTools | head -1)
-            [ -z "$P2" ] && continue
-            osascript -e "tell application \"System Events\" to get count of windows of (first process whose unix id is $P2)" \
-              > /tmp/smoke/window-count-2.txt 2>/dev/null
-            W2=$(tr -d '[:space:]' < /tmp/smoke/window-count-2.txt)
-            if [[ "$W2" =~ ^[0-9]+$ ]] && [ "$W2" -gt 0 ]; then break; fi
-          done
-          echo "第二次启动: pid=$P2 windows=$W2"
-          echo "--- app2.log ---"; cat /tmp/smoke/app2.log
-          pkill -x TraeTools 2>/dev/null
-          [ -n "$P2" ] || { echo "FAIL: 第二次启动连进程都没有（疑似 Mutex 残留导致静默退出）"; exit 1; }
-          if [[ ! "$W2" =~ ^[0-9]+$ ]] || [ "$W2" = "0" ]; then
-            echo "FAIL: 第二次启动没有窗口（windows=$W2）"
-            exit 1
-          fi
-          echo "OK 可重复启动"
+        run: bash .github/smoke_macos_app.sh ./TraeTools.app /tmp/smoke
 
       - name: Upload smoke evidence
         if: always()

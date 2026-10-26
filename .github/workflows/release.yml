@@ -92,10 +92,68 @@ jobs:
             macos-src/macos/TraeBar-macos-x64.dmg
           if-no-files-found: error
 
+  # ---------- macOS 完整版：.NET/Avalonia 窗口应用，双架构 dmg ----------
+  # 与上面的 macos job（Swift 菜单栏版 TraeBar）是两条独立产品线，同时发布。
+  macos-desktop:
+    name: macOS 完整版包（Intel + Apple Silicon）
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            rid: osx-arm64
+            label: arm64
+          - arch: x86_64
+            rid: osx-x64
+            label: x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      # 与 Windows 侧不同：macOS 不开单文件/裁剪/AOT。Avalonia 的 av_libglesv2、
+      # libSkiaSharp 等原生库必须与主程序同目录，裁剪还会吃掉 XAML 编译绑定的类型。
+      - name: Publish
+        run: >
+          dotnet publish TraeTools.csproj
+          -c Release
+          -r ${{ matrix.rid }}
+          --self-contained true
+          -p:PublishSingleFile=false
+          -p:PublishTrimmed=false
+          -p:EnableAot=false
+          -o out-macos
+
+      - name: Build login host (Swift + WKWebView)
+        run: bash .github/build_login_host.sh ${{ matrix.arch }} out-macos
+
+      - name: Package .app + dmg
+        run: |
+          VERSION="$(python3 -c "import json;print(json.load(open('version.json'))['version'])")"
+          bash .github/pkg_dotnet_dmg.sh ${{ matrix.arch }} "$VERSION" out-macos
+
+      # 发版只跑确定性契约检查（宿主协议 / 加密往返 / 自启 plist）。
+      # GUI 冒烟留给分支探路构建：它依赖窗口服务器时序、Rosetta 冷启动耗时，
+      # 用它卡发版会把可恢复的偶发抖动变成发不出去。
+      - name: Verify artifacts
+        run: bash .github/verify_macos_artifacts.sh ./TraeTools.app/Contents/MacOS
+
+      - name: Upload macOS desktop package
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-desktop-${{ matrix.label }}
+          path: TraeTools-macos-${{ matrix.label }}.dmg
+          if-no-files-found: error
+
   # ---------- 汇总：两个平台都成功后创建 Release ----------
   release:
     name: 创建 Release
-    needs: [windows, macos]
+    needs: [windows, macos, macos-desktop]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (for release notes)
@@ -140,11 +198,14 @@ jobs:
             echo "### 📦 下载"
             echo ""
             echo "- 🪟 Windows x64：\`TraeTools-win-x64.zip\`（NativeAOT 整包，解压运行，无需安装 .NET 运行时）"
-            echo "- 🍎 macOS Apple Silicon (M 系列)：\`TraeBar-macos-arm64.dmg\`（打开 dmg 拖入 Applications；首次启动放行见 dmg 内「首次启动必读.txt」或 README）"
-            echo "- 🍎 macOS Intel：\`TraeBar-macos-x64.dmg\`（同上）"
+            echo "- 🍎 **macOS 完整版** Apple Silicon (M 系列)：\`TraeTools-macos-arm64.dmg\`（完整窗口应用：仪表盘 / 用量统计 / 每日签到 / 账号切换 / 云端签到 / 运行日志 / 设置）"
+            echo "- 🍎 **macOS 完整版** Intel：\`TraeTools-macos-x64.dmg\`（同上）"
+            echo "- 🍎 macOS 菜单栏轻量版：\`TraeBar-macos-arm64.dmg\` / \`TraeBar-macos-x64.dmg\`（无主窗口，只在菜单栏常驻做自动签到，体积极小）"
             echo "- \`TraeTools.exe\` / \`TraeTools.LoginHost.exe\` 为 Windows 单文件引导包，仅用于老版本客户端首次升级"
             echo ""
-            echo "应用内「检查更新」会下载本 Release 的 \`TraeTools-win-x64.zip\`，校验后自动替换整套文件并重启。"
+            echo "macOS 版未做 Apple 公证，首次打开需放行：\`xattr -cr /Applications/TraeTools.app\`，或在「系统设置 → 隐私与安全性」底部点「仍要打开」。"
+            echo ""
+            echo "Windows 应用内「检查更新」会下载本 Release 的 \`TraeTools-win-x64.zip\`，校验后自动替换整套文件并重启；macOS 版暂不支持应用内更新，请到本页重新下载 dmg 覆盖安装（账号数据不受影响）。"
             echo ""
             if [ -n "${PREV}" ]; then
               echo "## 更新差异（${PREV} → ${GITHUB_REF_NAME}）"
@@ -173,6 +234,8 @@ jobs:
             dist/TraeTools-win-x64.zip
             dist/TraeTools.exe
             dist/TraeTools.LoginHost.exe
+            dist/TraeTools-macos-arm64.dmg
+            dist/TraeTools-macos-x64.dmg
             dist/TraeBar-macos-arm64.dmg
             dist/TraeBar-macos-x64.dmg
           generate_release_notes: false
