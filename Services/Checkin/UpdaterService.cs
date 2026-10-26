@@ -444,13 +444,13 @@ Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction Silent
         var sh = Path.Combine(Path.GetTempPath(), $"apply_update_{Guid.NewGuid():N}.sh");
         File.WriteAllText(sh, BuildMacSwapScript(dryRun: false), new UTF8Encoding(false));
 
-        // 路径一律走命令行参数，不拼进脚本体：拼进去的话路径里出现 $ 或反引号
+        // 路径与 PID 一律走命令行参数，不拼进脚本体：拼进去的话路径里出现 $ 或反引号
         // 会被 bash 二次展开，轻则脚本语法崩掉，重则执行意外命令。
         // 也不用 UseShellExecute：脚本要能在父进程退出后继续活着。
         Process.Start(new ProcessStartInfo
         {
             FileName = "/bin/bash",
-            ArgumentList = { sh, stagingDir, targetDir },
+            ArgumentList = { sh, stagingDir, targetDir, Environment.ProcessId.ToString(), "60" },
             UseShellExecute = false,
             CreateNoWindow = true,
         });
@@ -458,7 +458,7 @@ Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction Silent
     }
 
     /// <summary>
-    /// 生成 macOS 换包脚本，用法：bash script.sh &lt;stagingDir&gt; &lt;targetDir&gt;。
+    /// 生成 macOS 换包脚本，用法：bash script.sh &lt;stagingDir&gt; &lt;targetDir&gt; &lt;waitPid&gt; [waitSecs]。
     /// 抽成独立方法是为了让 --update-swap-selftest 跑**同一份**脚本 —— 更新器是唯一
     /// 能把用户现有安装直接搞坏的模块，脚本逻辑不能只靠读代码验收。
     /// dryRun 只跳过 open（拉起假 bundle），文件动作与生产完全一致。
@@ -475,6 +475,8 @@ Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction Silent
             set -u
             STAGE="$1"
             DST="$2"
+            WAIT_PID="$3"
+            WAIT_SECS="${4:-60}"
             APP="TraeTools.app"
             TARGET="$DST/$APP"
             NEW="$DST/.TraeTools.app.new"
@@ -483,16 +485,19 @@ Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction Silent
 
             relaunch() { [ "$DRY" = "1" ] || open "$1" 2>/dev/null; }
 
-            # 等旧进程退出，最多 60s。判据用 pgrep 而不是"文件能不能写"：
+            # 等**发起更新的那个进程**退出，而不是"没有任何叫 TraeTools 的进程"。
+            # 按名字等有两个错：本脚本若由 TraeTools 自己拉起的自检调用，会永远等不到；
+            # 而用户又开了一个副本时，会白等到超时。判据也不能是"文件能不能写"——
             # macOS 上正在运行的 bundle 依然可被 rename，用可写性会误判成已退出。
             gone=0
-            for i in $(seq 1 240); do
-              pgrep -x TraeTools >/dev/null 2>&1 || { gone=1; break; }
+            ticks=$(( WAIT_SECS * 4 ))
+            for i in $(seq 1 "$ticks"); do
+              kill -0 "$WAIT_PID" 2>/dev/null || { gone=1; break; }
               sleep 0.25
             done
             if [ "$gone" != "1" ]; then
               # 旧进程还活着就动包，等于在运行中的 bundle 上改文件。宁可放弃更新。
-              echo "swap: 旧进程 60s 内未退出，放弃换包（未改动任何文件）" >&2
+              echo "swap: 进程 $WAIT_PID 在 ${WAIT_SECS}s 内未退出，放弃换包（未改动任何文件）" >&2
               exit 1
             fi
 

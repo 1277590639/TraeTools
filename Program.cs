@@ -273,7 +273,7 @@ sealed class Program
             var stage1 = Path.Combine(work, "stage1");
             WriteBundle(Path.Combine(dst1, "TraeTools.app"), "old");
             WriteBundle(Path.Combine(stage1, "TraeTools.app"), "new");
-            var rc1 = RunSwapScript(stage1, dst1);
+            var rc1 = RunSwapScript(stage1, dst1, DeadPid());
             if (rc1 != 0 || ReadMarker(dst1) != "new")
             {
                 Console.Error.WriteLine($"FAIL 1: 正常换包失败 rc={rc1} marker={ReadMarker(dst1) ?? "<无>"}");
@@ -292,7 +292,7 @@ sealed class Program
             var stage2 = Path.Combine(work, "stage2");
             WriteBundle(Path.Combine(dst2, "TraeTools.app"), "old");
             Directory.CreateDirectory(stage2);   // 故意不放 TraeTools.app
-            var rc2 = RunSwapScript(stage2, dst2);
+            var rc2 = RunSwapScript(stage2, dst2, DeadPid());
             var marker2 = ReadMarker(dst2);
             if (rc2 == 0 || marker2 != "old")
             {
@@ -306,7 +306,7 @@ sealed class Program
             var stage2b = Path.Combine(work, "stage2b");
             Directory.CreateDirectory(dst2b);   // 没有 TraeTools.app
             WriteBundle(Path.Combine(stage2b, "TraeTools.app"), "new");
-            var rc2b = RunSwapScript(stage2b, dst2b);
+            var rc2b = RunSwapScript(stage2b, dst2b, DeadPid());
             if (rc2b != 0 || ReadMarker(dst2b) != "new")
             {
                 Console.Error.WriteLine($"FAIL 2b: 无旧版时换包失败 rc={rc2b} marker={ReadMarker(dst2b) ?? "<无>"}");
@@ -320,7 +320,7 @@ sealed class Program
             WriteBundle(Path.Combine(dst2c, "TraeTools.app"), "old");
             WriteBundle(Path.Combine(stage2c, "TraeTools.app"), "new");
             File.SetUnixFileMode(dst2c, UnixFileMode.UserRead | UnixFileMode.UserExecute);  // 去掉写权限
-            var rc2c = RunSwapScript(stage2c, dst2c);
+            var rc2c = RunSwapScript(stage2c, dst2c, DeadPid());
             var restored = ReadMarker(dst2c);
             File.SetUnixFileMode(dst2c, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             if (rc2c == 0 || restored != "old")
@@ -329,6 +329,45 @@ sealed class Program
                 ok = false;
             }
             else Console.Error.WriteLine("OK 2c: 目录不可写 → 旧版完好无损，脚本放弃");
+
+            // ---- 2d) 旧进程没退出 → 必须放弃且一个文件都不动 ----
+            // 这条正是把我自己的守卫逼出来的场景：脚本原先按进程名等，
+            // 而自检就跑在叫 TraeTools 的进程里，永远等不到。没有这条测试，
+            // 那个设计错误会一路带到发版。
+            var dst2d = Path.Combine(work, "dst2d");
+            var stage2d = Path.Combine(work, "stage2d");
+            WriteBundle(Path.Combine(dst2d, "TraeTools.app"), "old");
+            WriteBundle(Path.Combine(stage2d, "TraeTools.app"), "new");
+            using (var sleeper = Process.Start(new ProcessStartInfo("/bin/sleep")
+            {
+                ArgumentList = { "30" },
+                UseShellExecute = false,
+            }))
+            {
+                if (sleeper is null)
+                {
+                    Console.Error.WriteLine("FAIL 2d: 起不了占位进程，无法验证等待分支");
+                    ok = false;
+                }
+                else
+                {
+                    var rc2d = RunSwapScript(stage2d, dst2d, sleeper.Id.ToString(), "2");
+                    var marker2d = ReadMarker(dst2d);
+                    try { sleeper.Kill(entireProcessTree: true); } catch { /* 已退出 */ }
+                    if (rc2d == 0 || marker2d != "old")
+                    {
+                        Console.Error.WriteLine($"FAIL 2d: 旧进程未退出却动了包 rc={rc2d} marker={marker2d ?? "<丢了>"}");
+                        ok = false;
+                    }
+                    else if (Directory.Exists(Path.Combine(dst2d, ".TraeTools.app.new"))
+                             || Directory.Exists(Path.Combine(dst2d, ".TraeTools.app.old")))
+                    {
+                        Console.Error.WriteLine("FAIL 2d: 放弃换包却留下了 .new/.old 中间目录");
+                        ok = false;
+                    }
+                    else Console.Error.WriteLine("OK 2d: 旧进程未退出 → 放弃换包，现有安装零改动");
+                }
+            }
 
             // ---- 3) 解包：真做一个 dmg，走 hdiutil 挂载 + ditto 复制 ----
             var bundleSrc = Path.Combine(work, "dmgsrc");
@@ -428,16 +467,20 @@ sealed class Program
         return File.Exists(f) ? File.ReadAllText(f).Trim() : null;
     }
 
-    private static int RunSwapScript(string staging, string dst)
+    /// <summary>
+    /// 跑一次真实的换包脚本。waitPid/timeout 由调用方给：正常场景传一个已不存在的 PID
+    /// （等价于"旧进程已退出"），超时场景传一个活着的 PID + 很短的超时。
+    /// </summary>
+    private static int RunSwapScript(string staging, string dst, string waitPid, string timeoutSecs = "5")
     {
         var sh = Path.Combine(Path.GetTempPath(), $"swaptest_{Guid.NewGuid():N}.sh");
         File.WriteAllText(sh, TraeTools.Services.UpdaterService.BuildMacSwapScript(dryRun: true));
         try
         {
-            // 路径走参数而非拼进脚本体，与生产调用方式保持一致
+            // 路径与 PID 走参数而非拼进脚本体，与生产调用方式保持一致
             using var p = Process.Start(new ProcessStartInfo("/bin/bash")
             {
-                ArgumentList = { sh, staging, dst },
+                ArgumentList = { sh, staging, dst, waitPid, timeoutSecs },
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
@@ -450,6 +493,14 @@ sealed class Program
             return p.HasExited ? p.ExitCode : -1;
         }
         finally { try { File.Delete(sh); } catch { /* 忽略 */ } }
+    }
+
+    /// <summary>一个肯定不存在的 PID，代表「旧进程已经退出了」。</summary>
+    private static string DeadPid()
+    {
+        for (int pid = 999999; pid > 999900; pid--)
+            if (!Process.GetProcesses().Any(p => p.Id == pid)) return pid.ToString();
+        return "999999";
     }
 
     /// <summary>
