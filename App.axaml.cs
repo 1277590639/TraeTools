@@ -13,6 +13,14 @@ public partial class App : Application
     /// <summary>系统托盘图标全局引用（TrayIcon 无源头引用会被 GC 回收，故存于此）。</summary>
     public static TrayIcon? TrayRef;
 
+    public App()
+    {
+        // Avalonia 的 Application 构造函数把 Name 硬编码为 "Avalonia Application"，
+        // 而 macOS 顶部那条加粗的应用菜单名取的就是这个属性（不是 Info.plist 的
+        // CFBundleName —— 补了 NSPrincipalClass 也无效，实测过）。不覆盖就会一直显示 Avalonia。
+        Name = "TraeTools";
+    }
+
     public override void Initialize()
     {
         AvaloniaXamlLoader.Load(this);
