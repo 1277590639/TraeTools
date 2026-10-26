@@ -205,7 +205,7 @@ jobs:
             echo "### 📦 下载"
             echo ""
             echo "- 🪟 Windows x64：\`TraeTools-win-x64.zip\`（NativeAOT 整包，解压运行，无需安装 .NET 运行时）"
-            echo "- 🍎 **macOS 完整版** Apple Silicon (M 系列)：\`TraeTools-macos-arm64.dmg\`（完整窗口应用：仪表盘 / 用量统计 / 每日签到 / 账号切换 / 云端签到 / 运行日志 / 设置）"
+            echo "- 🍎 **macOS 完整版** Apple Silicon (M 系列)：\`TraeTools-macos-arm64.dmg\`（完整窗口应用：仪表盘 / 用量统计 / 每日签到 / 云端签到 / 运行日志 / 设置；账号切换暂未开放）"
             echo "- 🍎 **macOS 完整版** Intel：\`TraeTools-macos-x64.dmg\`（同上）"
             echo "- 🍎 macOS 菜单栏轻量版：\`TraeBar-macos-arm64.dmg\` / \`TraeBar-macos-x64.dmg\`（无主窗口，只在菜单栏常驻做自动签到，体积极小）"
             echo "- \`TraeTools.exe\` / \`TraeTools.LoginHost.exe\` 为 Windows 单文件引导包，仅用于老版本客户端首次升级"
