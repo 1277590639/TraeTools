@@ -12,17 +12,42 @@ public static class CarrierDefaults
 {
     public static string SettingsDir => TraeTools.Services.DataPaths.SwitchDir;
 
-    /// <summary>客户端主程序文件名（新 TRAE 实测）。</summary>
-    public const string ClientExeName = "Trae CN.exe";
+    /// <summary>
+    /// 客户端主程序文件名。
+    /// Windows 实测是 "Trae CN.exe"；macOS 上 Trae CN.app 的 CFBundleExecutable 字面就是
+    /// <c>Electron</c>（Electron 打包未改名），按 "Trae CN" 去找可执行文件会一个都找不到。
+    /// </summary>
+    public static string ClientExeName =>
+        OperatingSystem.IsWindows() ? "Trae CN.exe" : "Electron";
 
-    /// <summary>客户端进程名（任务管理器实测）。</summary>
+    /// <summary>客户端进程名（任务管理器实测）。同时也是数据目录名，macOS 上两者都成立。</summary>
     public const string ClientProcessName = "Trae CN";
 
-    /// <summary>客户端数据根：%APPDATA%\Trae CN。</summary>
+    /// <summary>
+    /// macOS 上用于枚举进程的 OS 进程名 —— 不等于 ClientProcessName。
+    /// Electron 主进程名取可执行文件名，所以是 "Electron"，必须再按 bundle 路径过滤。
+    /// </summary>
+    public static string OsProcessName =>
+        OperatingSystem.IsWindows() ? ClientProcessName : "Electron";
+
+    /// <summary>macOS 上客户端 bundle 的候选位置（含用户级 ~/Applications）。</summary>
+    public static string[] MacAppBundleCandidates =>
+    [
+        Path.Combine("/Applications", ClientProcessName + ".app"),
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                     "Applications", ClientProcessName + ".app"),
+    ];
+
+    /// <summary>客户端数据根：%APPDATA%\Trae CN（macOS 上即 ~/Library/Application Support/Trae CN）。</summary>
     public static string DefaultUserDataDir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), ClientProcessName);
 
-    public static string DefaultProcessName => ClientProcessName;
+    /// <summary>
+    /// 用于枚举/关闭客户端的 OS 进程名。macOS 上必须是 "Electron"，
+    /// 用数据目录名 "Trae CN" 去 GetProcessesByName 会一个都找不到，
+    /// 于是 IsRunning() 永远 false —— 切换就会在客户端还开着的时候动手。
+    /// </summary>
+    public static string DefaultProcessName => OsProcessName;
 
     /// <summary>
     /// 旧版客户端名（融合前 / 迁移源）。配置里出现这些名字即说明是"过期配置"，
@@ -83,6 +108,23 @@ public static class CarrierDefaults
     /// <summary>相对路径规范化（统一反斜杠），用于比较。</summary>
     public static string NormalizeRel(string rel) => rel.Replace('/', '\\').Trim();
 
+    /// <summary>
+    /// 把白名单相对路径拼成本机可用的文件系统路径。
+    /// 白名单以反斜杠作比较键（该形式已固化进 vault 与 settings.json，改不得），
+    /// 但反斜杠在 macOS/Linux 上是合法文件名字符、不是分隔符：直接 Path.Combine
+    /// 会拼出一个带字面反斜杠、永远不存在的路径，表现为「切换报成功但什么都没动」。
+    /// 因此这里按两种分隔符拆开再按本机分隔符重组。
+    /// </summary>
+    public static string ResolvePath(string root, string rel)
+    {
+        var parts = rel.Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return root;
+        var all = new string[parts.Length + 1];
+        all[0] = root;
+        Array.Copy(parts, 0, all, 1, parts.Length);
+        return Path.Combine(all);
+    }
+
     /// <summary>指纹是否为空或缺必须项（需重置为固定白名单）。</summary>
     public static bool IsStaleFingerprint(IEnumerable<string>? fingerprint)
     {
@@ -101,7 +143,7 @@ public static class CarrierDefaults
 
     public static bool Exists(string rootDir, string rel)
     {
-        var p = Path.Combine(rootDir, rel);
+        var p = ResolvePath(rootDir, rel);
         return File.Exists(p) || Directory.Exists(p);
     }
 
@@ -121,12 +163,17 @@ public static class CarrierDefaults
                 lock (DetectLock)
                 {
                     if (string.IsNullOrEmpty(_detectedExe))
-                        _detectedExe = AutoDetectClientExe() ?? @"D:\Trae CN\Trae CN.exe";   // 全部未命中：回退实测默认
+                        _detectedExe = AutoDetectClientExe() ?? DefaultClientExeFallback;   // 全部未命中：回退实测默认
                 }
             }
             return _detectedExe;
         }
     }
+
+    /// <summary>探测全部落空时的回退路径。macOS 上回退到 /Applications 下的 bundle 主程序。</summary>
+    private static string DefaultClientExeFallback => OperatingSystem.IsWindows()
+        ? @"D:\Trae CN\Trae CN.exe"                                              // Windows 实测安装位置
+        : Path.Combine(MacAppBundleCandidates[0], "Contents", "MacOS", "Electron");
 
     private static readonly object DetectLock = new();
     private static string _detectedExe = "";
@@ -134,12 +181,23 @@ public static class CarrierDefaults
     /// <summary>清空探测缓存，下次读取 DefaultClientExe 会重新探测（供 UI「重新探测」使用）。</summary>
     public static void ResetDetection() => _detectedExe = "";
 
-    /// <summary>按运行进程 → 候选目录探测客户端 exe；均未命中返回 null。</summary>
+    /// <summary>按运行进程 → 候选安装位置探测客户端主程序；均未命中返回 null。</summary>
     public static string? AutoDetectClientExe()
     {
         // 1) 正在运行的客户端：主模块路径最可靠（配置里存错路径时自动纠正，P0-1）
         var running = TryGetRunningClientExe();
         if (running != null) return running;
+
+        if (!OperatingSystem.IsWindows())
+        {
+            // macOS 没有「扫目录找 *.exe」这一步：直接看候选 .app 里的主程序在不在。
+            foreach (var bundle in MacAppBundleCandidates)
+            {
+                var exe = Path.Combine(bundle, "Contents", "MacOS", ClientExeName);
+                if (File.Exists(exe)) return exe;
+            }
+            return null;
+        }
 
         // 2) 候选安装目录：精确文件名优先，其次目录内名字含 Trae 的主程序，最后目录内唯一 exe
         foreach (var dir in CandidateClientDirs())
@@ -161,17 +219,25 @@ public static class CarrierDefaults
         return null;
     }
 
-    /// <summary>从正在运行的 "Trae CN" 进程读取主模块路径（只读；失败/无进程返回 null）。</summary>
+    /// <summary>
+    /// 从正在运行的客户端进程读取主模块路径（只读；失败/无进程返回 null）。
+    /// macOS 上进程名是 "Electron"，任何 Electron 应用都叫这个，所以必须再用
+    /// 路径里含 "Trae CN.app" 过滤，否则会把别的 Electron 客户端当成切换目标。
+    /// </summary>
     private static string? TryGetRunningClientExe()
     {
         try
         {
-            foreach (var p in Process.GetProcessesByName(ClientProcessName))
+            foreach (var p in Process.GetProcessesByName(OsProcessName))
             {
                 try
                 {
                     var path = p.MainModule?.FileName;
-                    if (!string.IsNullOrEmpty(path) && File.Exists(path)) return path;
+                    if (string.IsNullOrEmpty(path) || !File.Exists(path)) continue;
+                    if (!OperatingSystem.IsWindows()
+                        && !path.Contains(ClientProcessName + ".app", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    return path;
                 }
                 catch { /* 32/64 位或权限问题：忽略该进程 */ }
                 finally { try { p.Dispose(); } catch { /* 忽略 */ } }

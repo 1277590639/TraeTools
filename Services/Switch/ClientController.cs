@@ -36,14 +36,53 @@ public sealed class ClientController : IClientController
         _forceWait = forceWait;
     }
 
+    /// <summary>
+    /// 枚举属于本客户端的进程。
+    /// macOS 上 Trae 的进程名字面就是 "Electron"（Electron 打包未改名），任何 Electron 应用
+    /// 都叫这个 —— 只按进程名匹配会把 VS Code、Slack 当成切换目标关掉，所以必须再用
+    /// 「主模块路径落在同一个 .app 包内」过滤。读不到主模块的进程一律不计入，
+    /// 宁可少判也不能误杀别的应用。
+    /// </summary>
+    private List<Process> GetClientProcesses()
+    {
+        var result = new List<Process>();
+        Process[] raw;
+        try { raw = Process.GetProcessesByName(_processName); }
+        catch { return result; }
+
+        var bundle = MacBundleRoot(_exePath);
+        foreach (var p in raw)
+        {
+            if (bundle is null) { result.Add(p); continue; }
+            try
+            {
+                var path = p.MainModule?.FileName ?? "";
+                if (path.StartsWith(bundle, StringComparison.OrdinalIgnoreCase)) result.Add(p);
+                else p.Dispose();
+            }
+            catch
+            {
+                // 主模块读不到（权限/已退出）：跳过，不误伤
+                try { p.Dispose(); } catch { /* 忽略 */ }
+            }
+        }
+        return result;
+    }
+
+    /// <summary>从客户端主程序路径取出 .app 包根目录；Windows 或非 bundle 路径返回 null。</summary>
+    private static string? MacBundleRoot(string exePath)
+    {
+        if (OperatingSystem.IsWindows() || string.IsNullOrEmpty(exePath)) return null;
+        var cut = exePath.IndexOf(".app/", StringComparison.OrdinalIgnoreCase);
+        return cut > 0 ? exePath[..(cut + 4)] : null;
+    }
+
     public void KillAll()
     {
         if (string.IsNullOrWhiteSpace(_processName))
             throw new InvalidOperationException("未配置客户端进程名（settings.json 的 ProcessName），无法安全关闭客户端");
 
-        List<Process> procs;
-        try { procs = [.. Process.GetProcessesByName(_processName)]; }
-        catch { return; }
+        List<Process> procs = GetClientProcesses();
         if (procs.Count == 0) return;
 
         try { CloseAll(procs, _gracefulWait, _forceWait, IsAlive, ForceKill); }
@@ -115,6 +154,19 @@ public sealed class ClientController : IClientController
     {
         if (string.IsNullOrEmpty(_exePath) || !File.Exists(_exePath))
             throw new FileNotFoundException("找不到客户端：" + _exePath);
+
+        var bundle = MacBundleRoot(_exePath);
+        if (bundle is not null)
+        {
+            // 走 open -a 而不是直接 exec Contents/MacOS/Electron：后者绕过 LaunchServices，
+            // 应用拿不到 bundle 身份（图标、应用名、单实例语义都会退化）。
+            Process.Start(new ProcessStartInfo("/usr/bin/open")
+            {
+                ArgumentList = { "-a", bundle },
+                UseShellExecute = false,
+            });
+            return;
+        }
         Process.Start(new ProcessStartInfo(_exePath) { UseShellExecute = true });
     }
 
@@ -123,13 +175,8 @@ public sealed class ClientController : IClientController
     /// <summary>查询进程数并立即释放全部 Process 句柄（GetProcessesByName 返回的对象必须 Dispose）。</summary>
     private int GetProcessCount()
     {
-        try
-        {
-            Process[] procs = Process.GetProcessesByName(_processName);
-            int n = procs.Length;
-            foreach (var p in procs) try { p.Dispose(); } catch { /* 忽略 */ }
-            return n;
-        }
-        catch { return 0; }
+        var procs = GetClientProcesses();
+        foreach (var p in procs) try { p.Dispose(); } catch { /* 忽略 */ }
+        return procs.Count;
     }
 }

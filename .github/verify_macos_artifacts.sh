@@ -87,4 +87,12 @@ else
   fail "自启处于打开态却没打印出 plist 内容"
 fi
 
+# ---------- 5. 切换模块的相对路径解析 ----------
+# 白名单用反斜杠作比较键，反斜杠在 mac 上是合法文件名而非分隔符：解析错了不报错，
+# 只会「切换报成功但一个文件都没动」。这条是无客户端环境下唯一能自动验证的一环。
+"$APP" --switch-path-selftest > "$WORK/swpath.log" 2>&1
+grep -q "SWITCH PATH SELFTEST: PASS" "$WORK/swpath.log" || { cat "$WORK/swpath.log"; fail "切换路径解析自检未通过"; }
+grep "白名单" "$WORK/swpath.log" || true
+ok "切换相对路径解析正常（含「未创建的边车必须判不存在」的反向对照）"
+
 echo "=== macOS 产物验收全部通过 ==="

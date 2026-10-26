@@ -27,6 +27,11 @@ sealed class Program
             Environment.Exit(RunAutoStartSelftest());
             return;
         }
+        if (Array.Exists(args, a => a == "--switch-path-selftest"))
+        {
+            Environment.Exit(RunSwitchPathSelftest());
+            return;
+        }
 
         // CI 冒烟需要知道启动到底走到哪一步：Rosetta 转译下 /usr/bin/sample 的栈回溯是坏的，
         // 只能靠程序自己打点。stderr 会并进 app.log。
@@ -157,5 +162,80 @@ sealed class Program
 
         Console.WriteLine(ok ? "AUTOSTART SELFTEST: PASS" : "AUTOSTART SELFTEST: FAIL");
         return ok ? 0 : 1;
+    }
+
+    /// <summary>
+    /// 切换模块的相对路径解析自检。
+    /// 白名单以反斜杠作比较键（已固化进 vault，改不得），但反斜杠在 macOS 上是合法
+    /// 文件名而不是分隔符 —— 解析错了不会报错，只会「切换报成功但一个文件都没动」，
+    /// 或者把不存在的边车当成有效备份。这是唯一能在无客户端环境下自动验证的一环。
+    /// </summary>
+    private static int RunSwitchPathSelftest()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "trae_switch_selftest_" + Guid.NewGuid().ToString("N"));
+        var whitelist = TraeSwitch.Services.CarrierDefaults.FingerprintWhitelist;
+        try
+        {
+            Directory.CreateDirectory(root);
+            string[] created =
+            [
+                @"User\globalStorage\state.vscdb",
+                @"User\globalStorage\storage.json",
+                @"Local Storage\leveldb\CURRENT",
+                @"aha\device.json",
+                @"machineid",
+            ];
+            foreach (var rel in created)
+            {
+                var full = TraeSwitch.Services.CarrierDefaults.ResolvePath(root, rel);
+                Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+                File.WriteAllText(full, "x");
+            }
+
+            bool ok = true;
+            foreach (var rel in created)
+            {
+                if (!TraeSwitch.Services.CarrierDefaults.Exists(root, rel))
+                {
+                    Console.Error.WriteLine($"FAIL: 文件已造出但判定不存在：{rel}");
+                    ok = false;
+                }
+            }
+
+            // 没造的必须判不存在：判成存在会把空快照当成有效备份，恢复时用垃圾覆盖真登录态
+            if (TraeSwitch.Services.CarrierDefaults.Exists(root, @"User\globalStorage\state.vscdb-wal"))
+            {
+                Console.Error.WriteLine("FAIL: 未创建的边车被判为存在");
+                ok = false;
+            }
+
+            if (!OperatingSystem.IsWindows())
+            {
+                var probe = TraeSwitch.Services.CarrierDefaults.ResolvePath(root, @"User\globalStorage\state.vscdb");
+                if (probe.Contains('\\'))
+                {
+                    Console.Error.WriteLine($"FAIL: 解析结果含字面反斜杠，必然找不到文件：{probe}");
+                    ok = false;
+                }
+            }
+
+            // 白名单本身不该有重复的比较键（重复会让快照/恢复按同一项做两次）
+            var dup = whitelist.Select(TraeSwitch.Services.CarrierDefaults.NormalizeRel)
+                               .GroupBy(x => x, StringComparer.OrdinalIgnoreCase)
+                               .Where(g => g.Count() > 1).Select(g => g.Key).ToArray();
+            if (dup.Length > 0)
+            {
+                Console.Error.WriteLine("FAIL: 白名单存在重复项：" + string.Join(", ", dup));
+                ok = false;
+            }
+
+            Console.WriteLine($"（白名单 {whitelist.Length} 项）");
+            Console.WriteLine(ok ? "SWITCH PATH SELFTEST: PASS" : "SWITCH PATH SELFTEST: FAIL");
+            return ok ? 0 : 1;
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { /* 临时目录残留无害 */ }
+        }
     }
 }

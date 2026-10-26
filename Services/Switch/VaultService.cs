@@ -45,7 +45,7 @@ public sealed class VaultService(string rootDir, string vaultRoot)
     {
         foreach (var rel in fingerprint)
         {
-            var p = Path.Combine(rootDir, rel);
+            var p = CarrierDefaults.ResolvePath(rootDir, rel);
             if (Directory.Exists(p))
             {
                 foreach (var f in CarrierProfiler.EnumerateTree(p))
@@ -64,8 +64,8 @@ public sealed class VaultService(string rootDir, string vaultRoot)
     /// </summary>
     public static void OverwriteEntry(string srcRoot, string dstRoot, string rel)
     {
-        var src = Path.Combine(srcRoot, rel);
-        var dst = Path.Combine(dstRoot, rel);
+        var src = CarrierDefaults.ResolvePath(srcRoot, rel);
+        var dst = CarrierDefaults.ResolvePath(dstRoot, rel);
         if (Directory.Exists(src))
         {
             if (Directory.Exists(dst)) Directory.Delete(dst, recursive: true);
@@ -100,12 +100,12 @@ public sealed class VaultService(string rootDir, string vaultRoot)
             var list = new List<VaultEntry>();
             foreach (var rel in fp)
             {
-                var src = Path.Combine(rootDir, rel);
+                var src = CarrierDefaults.ResolvePath(rootDir, rel);
                 if (Directory.Exists(src))
                 {
                     foreach (var f in CarrierProfiler.EnumerateTree(src))
                     {
-                        var dst = Path.Combine(dir, Path.GetRelativePath(rootDir, f));
+                        var dst = CarrierDefaults.ResolvePath(dir, Path.GetRelativePath(rootDir, f));
                         Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
                         File.Copy(f, dst, overwrite: true);
                         list.Add(new VaultEntry(Path.GetRelativePath(rootDir, f), new FileInfo(f).Length, CarrierProfiler.HashFile(f)));
@@ -113,7 +113,7 @@ public sealed class VaultService(string rootDir, string vaultRoot)
                 }
                 else if (File.Exists(src))
                 {
-                    var dst = Path.Combine(dir, rel);
+                    var dst = CarrierDefaults.ResolvePath(dir, rel);
                     Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
                     File.Copy(src, dst, overwrite: true);
                     list.Add(new VaultEntry(rel, new FileInfo(src).Length, CarrierProfiler.HashFile(src)));
@@ -206,7 +206,7 @@ public sealed class VaultService(string rootDir, string vaultRoot)
         {
             if (IsNonDiscriminative(e.Rel)) continue;
             comparable++;
-            var live = Path.Combine(rootDir, e.Rel);
+            var live = CarrierDefaults.ResolvePath(rootDir, e.Rel);
             if (!File.Exists(live)) continue;
             try
             {
@@ -273,7 +273,7 @@ public sealed class VaultService(string rootDir, string vaultRoot)
         {
             if (!discriminant.Contains(e.Rel)) continue;
             total++;
-            var live = Path.Combine(rootDir, e.Rel);
+            var live = CarrierDefaults.ResolvePath(rootDir, e.Rel);
             if (!File.Exists(live)) continue;
             try
             {
@@ -308,7 +308,7 @@ public sealed class VaultService(string rootDir, string vaultRoot)
 
         if (list.Any(IsVscdbFamily))
             foreach (var side in VscdbSidecarRels)
-                DeleteIfExists(Path.Combine(dstRoot, side));
+                DeleteIfExists(CarrierDefaults.ResolvePath(dstRoot, side));
 
         foreach (var rel in list)
             OverwriteEntry(srcRoot, dstRoot, rel);
@@ -349,9 +349,9 @@ public sealed class VaultService(string rootDir, string vaultRoot)
             foreach (var rel in MustSyncBackRels)
             {
                 if (allowed is { Count: > 0 } && !allowed.Contains(NormalizeRel(rel))) continue;
-                var src = Path.Combine(rootDir, rel);
+                var src = CarrierDefaults.ResolvePath(rootDir, rel);
                 if (!File.Exists(src)) continue;
-                var dst = Path.Combine(AccountDir(account), rel);
+                var dst = CarrierDefaults.ResolvePath(AccountDir(account), rel);
                 Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
                 File.Copy(src, dst, overwrite: true);
                 UpdateMetaEntry(account, rel, src);
@@ -402,8 +402,8 @@ public sealed class VaultService(string rootDir, string vaultRoot)
             {
                 // 缓存条目既不在新快照里、也会被客户端不断改写，跳过（兼容收录过它们的历史快照）。
                 if (IsVolatileCachePath(e.Rel)) continue;
-                var vaultFile = Path.Combine(AccountDir(account), e.Rel);
-                var liveFile = Path.Combine(rootDir, e.Rel);
+                var vaultFile = CarrierDefaults.ResolvePath(AccountDir(account), e.Rel);
+                var liveFile = CarrierDefaults.ResolvePath(rootDir, e.Rel);
                 if (!File.Exists(vaultFile) || !File.Exists(liveFile)) return false;
                 if (!string.Equals(
                         CarrierProfiler.HashFile(vaultFile), CarrierProfiler.HashFile(liveFile),
