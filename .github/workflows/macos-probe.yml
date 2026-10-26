@@ -215,17 +215,48 @@ jobs:
             if [[ "$WC" =~ ^[0-9]+$ ]] && [ "$WC" -gt 0 ]; then break; fi
           done
           screencapture -x /tmp/smoke/screen-15s.png
-          # 品牌名：菜单栏第一个菜单项就是应用名，取不到就还是 "Avalonia Application"。
-          osascript -e "tell application \"System Events\" to get name of menu bar item 1 of menu bar 1 of (first process whose unix id is $APP_PID)" \
-            > /tmp/smoke/app-menu-name.txt 2>/dev/null
-          echo "应用菜单名: $(cat /tmp/smoke/app-menu-name.txt)"
+          # 品牌名：应用菜单是加粗显示应用名的那一项。
+          # 不能用 menu bar item 1 —— 那是苹果 logo（实测返回 "Apple"），也不能靠下标，
+          # 所以取全部菜单项名字，看有没有任意一项是 TraeTools。
+          osascript -e "tell application \"System Events\" to get name of every menu bar item of menu bar 1 of (first process whose unix id is $APP_PID)" \
+            > /tmp/smoke/app-menu-names.txt 2>/tmp/smoke/osascript.err
+          echo "菜单栏项: $(cat /tmp/smoke/app-menu-names.txt)"
           echo "--- app.log ---"; cat /tmp/smoke/app.log
           pkill -x TraeTools 2>/dev/null
           if [ "$WC" = "0" ]; then echo "FAIL: 轮询满 63s 仍零窗口"; exit 1; fi
-          case "$(cat /tmp/smoke/app-menu-name.txt)" in
+          case "$(cat /tmp/smoke/app-menu-names.txt)" in
             *TraeTools*) echo "OK 应用名已生效" ;;
-            *) echo "FAIL: 菜单栏应用名不是 TraeTools，实际 '$(cat /tmp/smoke/app-menu-name.txt)'"; exit 1 ;;
+            *) echo "FAIL: 菜单栏里没有 TraeTools 应用菜单，实际 '$(cat /tmp/smoke/app-menu-names.txt)'"; exit 1 ;;
           esac
+      # 退出后再启动一次。.NET 在 Unix 上的命名 Mutex 会落地成 /tmp 下的文件，
+      # 若进程退出后残留，第二次启动会走 createdNew=false 分支静默 return ——
+      # 用户看到的就是「关掉之后再也打不开」。这条只能实测，读代码看不出来。
+      - name: Relaunch — 退出后能否再次启动
+        if: success()
+        run: |
+          set +e
+          pkill -x TraeTools; sleep 2
+          open -n --stdout /tmp/smoke/app2.log --stderr /tmp/smoke/app2.log ./TraeTools.app
+          P2=""; W2=""
+          for i in $(seq 1 20); do
+            sleep 3
+            P2=$(pgrep -x TraeTools | head -1)
+            [ -z "$P2" ] && continue
+            osascript -e "tell application \"System Events\" to get count of windows of (first process whose unix id is $P2)" \
+              > /tmp/smoke/window-count-2.txt 2>/dev/null
+            W2=$(tr -d '[:space:]' < /tmp/smoke/window-count-2.txt)
+            if [[ "$W2" =~ ^[0-9]+$ ]] && [ "$W2" -gt 0 ]; then break; fi
+          done
+          echo "第二次启动: pid=$P2 windows=$W2"
+          echo "--- app2.log ---"; cat /tmp/smoke/app2.log
+          pkill -x TraeTools 2>/dev/null
+          [ -n "$P2" ] || { echo "FAIL: 第二次启动连进程都没有（疑似 Mutex 残留导致静默退出）"; exit 1; }
+          if [[ ! "$W2" =~ ^[0-9]+$ ]] || [ "$W2" = "0" ]; then
+            echo "FAIL: 第二次启动没有窗口（windows=$W2）"
+            exit 1
+          fi
+          echo "OK 可重复启动"
+
       - name: Upload smoke evidence
         if: always()
         uses: actions/upload-artifact@v4

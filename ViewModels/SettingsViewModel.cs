@@ -477,11 +477,20 @@ public partial class SettingsViewModel : ViewModelBase
         // 无真实账号时不展示示例账号（示例无法被删除，会造成「账号不存在」误导）
     }
 
-    /// <summary>开关变动立即持久化（写注册表），避免不开「保存设置」直接关窗导致状态丢失。#25</summary>
+    /// <summary>开关变动立即持久化（Windows 写注册表 / macOS 写 LaunchAgent），避免不开「保存设置」直接关窗导致状态丢失。#25</summary>
     partial void OnAutoStartEnabledChanged(bool value)
     {
-        try { AutoStartManager.SetEnabled(value); } catch { /* 写注册表失败不阻断 */ }
+        if (_syncingAutoStart) return;
+        var err = AutoStartManager.SetEnabled(value);
+        if (err is null) return;
+        // 写失败必须把开关拨回去并说明原因：留着它就是个「显示已开启、实际没生效」的假开关。
+        PushStatus = "开机自启未生效：" + err;
+        _syncingAutoStart = true;
+        AutoStartEnabled = !value;
+        _syncingAutoStart = false;
     }
+
+    private bool _syncingAutoStart;
 
     [RelayCommand]
     private void SaveSettings()
@@ -489,7 +498,7 @@ public partial class SettingsViewModel : ViewModelBase
         try
         {
             // 保存开机自启
-            AutoStartManager.SetEnabled(AutoStartEnabled);
+            var autoStartErr = AutoStartManager.SetEnabled(AutoStartEnabled);
 
             // 保存到 AppConfig
             var cfg = MainViewModel.AppConfig;
@@ -513,7 +522,7 @@ public partial class SettingsViewModel : ViewModelBase
                 AccountHelpers.AppLog("account", "", $"设置已保存：自动签到={AutoCheckinEnabled}，时间={AutoCheckinTime}，间隔={cfg.CheckinIntervalSeconds}秒，托盘={MinimizeToTray}，代理={(ProxyEnabled ? cfg.ProxyServer : "关")}");
             }
 
-            PushStatus = "已保存 ✓";
+            PushStatus = autoStartErr is null ? "已保存 ✓" : "设置已保存，但开机自启未生效：" + autoStartErr;
         }
         catch
         {
