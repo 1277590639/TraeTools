@@ -131,8 +131,8 @@ public static class SecurityAudit
         };
     }
 
-    /// <summary>当前平台加密机制名称（仅用于报告文案）。本 PR 只覆盖 Windows 版主程序。</summary>
-    private static string VaultName => "Windows DPAPI";
+    /// <summary>当前平台加密机制名称（仅用于报告文案，不涉及加解密本身）。</summary>
+    private static string VaultName => SecretProtector.MechanismName;
 
     // ---------- 2. 加解密自检 ----------
 
@@ -168,28 +168,18 @@ public static class SecurityAudit
     }
 
     /// <summary>
-    /// 自检用：与 AppConfig 的落盘加密保持同一机制（当前 Windows 用户作用域 DPAPI）。
-    /// 刻意**不复用** AppConfig 的私有方法——自检若依赖被测对象本身，就失去了独立验证的意义。
+    /// 自检用：直接走 <see cref="SecretProtector"/>，探的是「本机平台加密到底可用不可用」，
+    /// 不经过 AppConfig 的迁移/标记/字段选择逻辑——那些才是本自检要独立验证的对象。
     /// </summary>
     private static string? ProtectSample(string plain)
     {
-        try
-        {
-            var bytes = ProtectedData.Protect(
-                System.Text.Encoding.UTF8.GetBytes(plain), null, DataProtectionScope.CurrentUser);
-            return Convert.ToBase64String(bytes);
-        }
+        try { return SecretProtector.Protect(plain); }
         catch { return null; }
     }
 
     private static string? UnprotectSample(string enc)
     {
-        try
-        {
-            var bytes = ProtectedData.Unprotect(
-                Convert.FromBase64String(enc), null, DataProtectionScope.CurrentUser);
-            return System.Text.Encoding.UTF8.GetString(bytes);
-        }
+        try { return SecretProtector.Unprotect(enc); }
         catch { return null; }
     }
 

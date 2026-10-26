@@ -2,18 +2,23 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using TraeTools.Services.Json;
+using TraeTools.Services.Security;
 
 namespace TraeCheckin;
 
 /// <summary>
 /// 本地配置：存储 token、设备号、自动签到设置。
-/// 保存到 %APPDATA%\TraeTools\config.json。
-/// 敏感字段（Token/Session/GitHubToken/DeviceId）以当前 Windows 用户 DPAPI 加密落盘，
+/// 保存到 %APPDATA%\TraeTools\config.json（macOS 上即 ~/Library/Application Support/TraeTools）。
+/// 敏感字段（Token/Session/GitHubToken/DeviceId）以平台加密机制落盘，
 /// 加载时解密回内存；旧版明文在首次加载时自动迁移加密。
 /// </summary>
 public class AppConfig
 {
-    /// <summary>敏感字段加密版本标记："dpapi-v1"=已用 DPAPI 加密；null=旧版明文（等待迁移）。</summary>
+    /// <summary>
+    /// 敏感字段加密版本标记："dpapi-v1"=已加密落盘；null=旧版明文（等待迁移）。
+    /// 字面量保留 dpapi 命名以兼容线上配置，实际机制按平台分派（见 <see cref="SecretProtector"/>），
+    /// 单个值究竟是 DPAPI 还是 AES-GCM 由密文自身的 "aesg:" 前缀判定，不依赖本标记。
+    /// </summary>
     public string? SecretsVaultVersion { get; set; }
     public string? Token { get; set; }
     /// <summary>X-Cloudide-Session 会话 Cookie 值（约 14 天有效），用于 token 失效时静默换新。</summary>
@@ -378,23 +383,14 @@ public class AppConfig
         }
     }
 
-    /// <summary>DPAPI 加密（当前 Windows 用户作用域）。保护失败抛异常，由调用方兜底（保留旧文件）。</summary>
+    /// <summary>
+    /// 落盘加密。保护失败抛异常，由调用方兜底（保留旧文件）。
+    /// 平台分派见 <see cref="SecretProtector"/>：Windows 走 DPAPI，其余走 AES-GCM。
+    /// </summary>
     private static string? EncryptSecret(string? plain)
-    {
-        if (string.IsNullOrEmpty(plain)) return plain;
-        var bytes = ProtectedData.Protect(Encoding.UTF8.GetBytes(plain), null, DataProtectionScope.CurrentUser);
-        return Convert.ToBase64String(bytes);
-    }
+        => string.IsNullOrEmpty(plain) ? plain : SecretProtector.Protect(plain);
 
-    /// <summary>DPAPI 解密；失败（如换 Windows 用户/重装系统）返回 null，触发重新登录。</summary>
+    /// <summary>解密；失败（换机/换用户/密钥丢失）返回 null，触发重新登录。</summary>
     private static string? DecryptSecret(string? enc)
-    {
-        if (string.IsNullOrEmpty(enc)) return enc;
-        try
-        {
-            var bytes = ProtectedData.Unprotect(Convert.FromBase64String(enc), null, DataProtectionScope.CurrentUser);
-            return Encoding.UTF8.GetString(bytes);
-        }
-        catch { return null; }
-    }
+        => SecretProtector.Unprotect(enc);
 }

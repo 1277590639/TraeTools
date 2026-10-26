@@ -15,6 +15,14 @@ sealed class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        // 无界面自检：给 CI 冒烟用。macOS 上跑不到登录流程，就验证不了凭据加密，
+        // 而这个环节恰恰是 DPAPI → AES-GCM 换机制后最容易静默坏掉的地方。
+        if (Array.Exists(args, a => a == "--crypto-selftest"))
+        {
+            Environment.Exit(RunCryptoSelftest());
+            return;
+        }
+
         using var mutex = new Mutex(true, MutexName, out bool createdNew);
         if (!createdNew)
         {
@@ -35,4 +43,46 @@ sealed class Program
 #endif
             .WithInterFont()
             .LogToTrace();
+
+    /// <summary>
+    /// 凭据加密往返自检，返回进程退出码。只探平台加密层，不碰 AppConfig 的迁移逻辑。
+    /// </summary>
+    private static int RunCryptoSelftest()
+    {
+        const string sample = "traetools-crypto-selftest-2026";
+        bool ok = true;
+
+        Console.WriteLine($"mechanism: {TraeTools.Services.Security.SecretProtector.MechanismName}");
+
+        string? enc;
+        try
+        {
+            enc = TraeTools.Services.Security.SecretProtector.Protect(sample);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"FAIL: Protect 抛异常 {ex.GetType().Name}: {ex.Message}");
+            return 1;
+        }
+
+        if (string.IsNullOrEmpty(enc)) { Console.WriteLine("FAIL: Protect 返回空"); return 1; }
+        if (enc == sample) { Console.WriteLine("FAIL: 密文与明文相同，未真正加密"); ok = false; }
+
+        var back = TraeTools.Services.Security.SecretProtector.Unprotect(enc);
+        if (!string.Equals(back, sample, StringComparison.Ordinal))
+        {
+            Console.WriteLine("FAIL: 解密未能还原原文");
+            ok = false;
+        }
+
+        // 坏密文必须收敛成 null（触发重新登录），不能把异常抛到启动路径上。
+        if (TraeTools.Services.Security.SecretProtector.Unprotect("not-base64-at-all") != null)
+        {
+            Console.WriteLine("FAIL: 非法密文未返回 null");
+            ok = false;
+        }
+
+        Console.WriteLine(ok ? "CRYPTO SELFTEST: PASS" : "CRYPTO SELFTEST: FAIL");
+        return ok ? 0 : 1;
+    }
 }

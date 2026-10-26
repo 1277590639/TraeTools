@@ -75,6 +75,18 @@ jobs:
           echo "--- 错误总数 ---"
           grep -cE "error [A-Z]+[0-9]+" /tmp/publish-osx-x64.log || echo 0
 
+      # 加密换机制后最容易「静默坏掉」：Protect 成功但 Unprotect 取不回来，
+      # 表现是每次启动都要重新登录。GUI 冒烟走不到这一步，所以单独探。
+      - name: Crypto selftest — 凭据加密往返
+        if: success()
+        run: |
+          mkdir -p /tmp/smoke
+          ./out-macos/TraeTools --crypto-selftest > /tmp/smoke/crypto.log 2>&1 || true
+          cat /tmp/smoke/crypto.log
+          # tee/|| 都会吞掉退出码，判据只认输出里的 PASS。
+          grep -q "CRYPTO SELFTEST: PASS" /tmp/smoke/crypto.log \
+            || { echo "FAIL: 加密自检未通过"; exit 1; }
+
       # 编译通过不等于界面能出来。这里真的把 App 跑起来、截图、数窗口，
       # 把图作为 artifact 传回来 —— 这是不装 SDK 也能拿到「mac 上长什么样」的唯一实证。
       - name: Smoke — 启动并截图
