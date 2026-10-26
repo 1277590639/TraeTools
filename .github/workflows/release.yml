@@ -57,7 +57,7 @@ jobs:
           path: |
             TraeTools-win-x64.zip
             publish\TraeTools.exe
-            publish\TraeTools.LoginHost.exe
+            publish_aot\TraeTools.LoginHost.exe
           if-no-files-found: error
 
   # ---------- macOS：TraeBar（Swift/AppKit 菜单栏版，源码在 macos 分支）双架构 dmg ----------
@@ -230,6 +230,10 @@ jobs:
         run: |
           mv dist/publish/* dist/ 2>/dev/null || true
           rmdir dist/publish 2>/dev/null || true
+          # 登录宿主发布在 publish_aot/ 下（它不参与主程序 AOT），只把这一个文件提上来，
+          # 其余 AOT 产物已经在 TraeTools-win-x64.zip 里了。
+          mv dist/publish_aot/TraeTools.LoginHost.exe dist/ 2>/dev/null || true
+          rmdir dist/publish_aot 2>/dev/null || true
           ls -la dist/
 
       - name: Create GitHub Release
