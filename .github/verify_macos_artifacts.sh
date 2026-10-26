@@ -101,4 +101,19 @@ grep -q "SWITCH PATH SELFTEST: PASS" "$WORK/swpath.log" || { cat "$WORK/swpath.l
 grep "白名单" "$WORK/swpath.log" || true
 ok "切换相对路径解析正常（含「未创建的边车必须判不存在」的反向对照）"
 
+# ---------- 3.5 网络与 TLS ----------
+# 签到/用量/云端全走 https://api.trae.cn。自包含 macOS 包的证书链校验走 .NET +
+# Security.framework，坏掉时表现是「签到失败：SSL/信任」，与代码逻辑无关、只在真机暴露。
+# 连不上只算 unknown（CI 机器可能到不了国内站点），TLS 层失败才是硬失败。
+"$APP" --net-selftest > "$WORK/net.log" 2>&1
+rc=$?
+cat "$WORK/net.log"
+[ "$rc" = "0" ] || fail "网络/TLS 自检失败（见上方 net.log）"
+grep -qE "NET SELFTEST: (PASS|UNKNOWN)" "$WORK/net.log" || fail "网络/TLS 自检没有明确结论"
+if grep -q "NET SELFTEST: PASS" "$WORK/net.log"; then
+  ok "TLS 与到 api.trae.cn 的连通性正常"
+else
+  echo "OK 根证书库可用（外网连通性未知：CI 机器可能到不了国内站点）"
+fi
+
 echo "=== macOS 产物验收全部通过 ==="

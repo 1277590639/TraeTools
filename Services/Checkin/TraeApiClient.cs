@@ -32,7 +32,8 @@ public class CheckinStatus
 /// </summary>
 public class TraeApiClient
 {
-    private const string BaseUrl = "https://api.trae.cn";
+    /// <summary>接口根地址。internal 以便 --net-selftest 复用同一个值，避免两处漂移。</summary>
+    internal const string BaseUrl = "https://api.trae.cn";
 
     private readonly HttpClient _http;
 
