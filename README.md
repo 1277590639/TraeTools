@@ -60,7 +60,9 @@
 | `TraeBar-macos-arm64.dmg` | 🍎 Apple Silicon（M1/M2/M3/M4…） | 打开 dmg，把 TraeBar 拖入 Applications |
 | `TraeBar-macos-x64.dmg` | 🍎 Intel Mac | 同上 |
 
-> 🍎 macOS 包未做公证，**首次启动**：在「应用程序」里右键 TraeBar →「打开」；若提示已损坏，终端执行 `xattr -cr /Applications/TraeBar.app` 即可。
+> 🍎 macOS 包未做 Apple 公证（公证需要付费开发者账号），所以**首次启动会被系统拦截，这是 macOS 对所有网络下载软件的行为，不是包损坏**。放行方式（二选一）：
+> 1. 系统设置 → 隐私与安全性 → 拉到底点「仍要打开」；
+> 2. 终端执行：`xattr -cr /Applications/TraeBar.app` 后正常双击。
 
 ## 🚀 快速开始
 

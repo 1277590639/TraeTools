@@ -140,7 +140,7 @@ jobs:
             echo "### 📦 下载"
             echo ""
             echo "- 🪟 Windows x64：\`TraeTools-win-x64.zip\`（NativeAOT 整包，解压运行，无需安装 .NET 运行时）"
-            echo "- 🍎 macOS Apple Silicon (M 系列)：\`TraeBar-macos-arm64.dmg\`（打开 dmg 拖入 Applications；未公证，首次启动请右键 → 打开）"
+            echo "- 🍎 macOS Apple Silicon (M 系列)：\`TraeBar-macos-arm64.dmg\`（打开 dmg 拖入 Applications；首次启动放行见 dmg 内「首次启动必读.txt」或 README）"
             echo "- 🍎 macOS Intel：\`TraeBar-macos-x64.dmg\`（同上）"
             echo "- \`TraeTools.exe\` / \`TraeTools.LoginHost.exe\` 为 Windows 单文件引导包，仅用于老版本客户端首次升级"
             echo ""
