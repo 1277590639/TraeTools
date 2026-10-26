@@ -62,6 +62,8 @@ cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # ---- Info.plist ----
 # 刻意不写 LSUIElement：这是有主窗口的完整应用，与 TraeBar 菜单栏版相反。
+# NSPrincipalClass 必须有：缺了它 LaunchServices 不把这个包当标准 NSApplication 接管，
+# 加粗的应用菜单名就不会取 CFBundleName，实测会退化成 Avalonia 的 "Avalonia Application"。
 cat > "$APP/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -76,6 +78,7 @@ cat > "$APP/Contents/Info.plist" << PLIST
   <key>CFBundleVersion</key><string>1</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
