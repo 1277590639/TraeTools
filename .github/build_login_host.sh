@@ -6,6 +6,10 @@ set -euo pipefail
 ARCH="${1:?用法: build_login_host.sh <arm64|x86_64> <out_dir>}"
 OUT_DIR="${2:?缺少发布目录}"
 
+# 必须先转成绝对路径：下面要 cd 进 macos-loginhost，届时相对路径会解析成
+# macos-loginhost/out-macos，宿主就被复制到别处去了（打包时静默缺宿主）。
+OUT_DIR="$(mkdir -p "$OUT_DIR" && cd "$OUT_DIR" && pwd)"
+
 cd "$(dirname "$0")/../macos-loginhost"
 swift build -c release --arch "$ARCH"
 

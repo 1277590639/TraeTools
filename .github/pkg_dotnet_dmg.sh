@@ -89,11 +89,17 @@ cp -R "$PUBLISH_DIR"/. "$BIN_DIR"/
 chmod +x "$BIN_DIR/TraeTools"
 
 # ---- 登录宿主：主程序在 AppContext.BaseDirectory（即 MacOS/）找它 ----
+# 缺宿主会让自动登录静默退化成「手动粘贴 Cookie」，属于功能缺失而不是可选优化，
+# 所以默认直接失败；只有本地调试才用 ALLOW_MISSING_LOGIN_HOST=1 跳过。
 HOST_SRC="$PUBLISH_DIR/TraeTools.LoginHost"
 if [ -f "$HOST_SRC" ]; then
   chmod +x "$HOST_SRC"
+elif [ "${ALLOW_MISSING_LOGIN_HOST:-0}" = "1" ]; then
+  echo "警告：缺登录宿主，已按 ALLOW_MISSING_LOGIN_HOST=1 放行" >&2
 else
-  echo "警告：$HOST_SRC 不存在，自动登录将退化为手动粘贴 Cookie" >&2
+  echo "找不到登录宿主：$HOST_SRC" >&2
+  echo "先跑 .github/build_login_host.sh <arch> $PUBLISH_DIR；本地调试可设 ALLOW_MISSING_LOGIN_HOST=1" >&2
+  exit 1
 fi
 
 # ---- ad-hoc 签名：先签内层宿主，再签整个 bundle ----
