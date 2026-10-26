@@ -1,10 +1,20 @@
 name: macOS Port Probe
 
 # 探路构建：验证主程序能否在 macOS 上编译，把真实错误清单收集回来。
-# 只手动触发，不发 Release，不影响 main 的构建与用户。
+# 只在 macos-avalonia 分支上由 push 触发，不发 Release，不影响 main 的构建与用户。
+#
+# 不用 workflow_dispatch：GitHub 只注册默认分支上存在的 workflow，
+# 未进 main 的文件调 dispatch API 会 404。push 触发没有这个限制。
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - macos-avalonia
+    paths:
+      - "TraeTools.csproj"
+      - "**/*.cs"
+      - "**/*.axaml"
+      - ".github/workflows/macos-probe.yml"
 
 permissions:
   contents: read
