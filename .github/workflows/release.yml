@@ -212,7 +212,7 @@ jobs:
             echo ""
             echo "macOS 版未做 Apple 公证，首次打开需放行：\`xattr -cr /Applications/TraeTools.app\`，或在「系统设置 → 隐私与安全性」底部点「仍要打开」。"
             echo ""
-            echo "Windows 应用内「检查更新」会下载本 Release 的 \`TraeTools-win-x64.zip\`，校验后自动替换整套文件并重启；macOS 版暂不支持应用内更新，请到本页重新下载 dmg 覆盖安装（账号数据不受影响）。"
+            echo "Windows 与 macOS 的应用内「检查更新」都会下载本 Release 对应平台的包：Windows 取 \`TraeTools-win-x64.zip\` 整套替换后重启；macOS 取 \`TraeTools-macos-<架构>.dmg\`，挂载后替换整个 .app（失败自动回滚旧版）。"
             echo ""
             if [ -n "${PREV}" ]; then
               echo "## 更新差异（${PREV} → ${GITHUB_REF_NAME}）"

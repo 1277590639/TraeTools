@@ -266,7 +266,7 @@ public static class SecurityAudit
     /// <summary>
     /// 判断落盘值是否为明文。只做形态判断，不解密：
     ///   · 含 "://"（推送地址）/ 含 "." 且像 JWT → 明文
-    ///   · 纯 base64 且长度足够 → 视为 DPAPI 密文
+    ///   · 纯 base64 且长度足够 → 视为平台密文（DPAPI，或剥掉 aesg: 前缀后的 AES-GCM）
     ///   · 16 位纯数字（DeviceId 明文兜底）→ 明文
     /// </summary>
     private static bool LooksPlaintext(string? stored)
@@ -275,9 +275,14 @@ public static class SecurityAudit
         if (JwtPattern.IsMatch(stored)) return true;
         if (stored.Contains("://", StringComparison.Ordinal)) return true;
         if (stored.Length == 16 && stored.All(char.IsDigit)) return true;
+        // 非 Windows 的密文带 "aesg:" 前缀；冒号不属于 base64 字符集，
+        // 不先剥掉就会把已加密的值误判成明文，安全面板会对着一堆密文喊泄露。
+        var body = stored.StartsWith(SecretProtector.AesPrefix, StringComparison.Ordinal)
+            ? stored[SecretProtector.AesPrefix.Length..]
+            : stored;
         // 纯 base64 且无 '.'（JWT 一定带点）→ 认作平台密文
-        bool base64ish = stored.Length >= 24 && stored.Length % 4 == 0 &&
-                         stored.All(c => char.IsLetterOrDigit(c) || c == '+' || c == '/' || c == '=');
+        bool base64ish = body.Length >= 24 && body.Length % 4 == 0 &&
+                         body.All(c => char.IsLetterOrDigit(c) || c == '+' || c == '/' || c == '=');
         return !base64ish;
     }
 

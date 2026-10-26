@@ -140,10 +140,15 @@ public class AppConfig
                 var cfg = AppJsonIndented.Deserialize<AppConfig>(json);
                 if (cfg != null)
                 {
-                    // DPAPI 加密迁移：已是 dpapi-v1 则解密回内存使用；旧明文标记版本，稍后统一加密落盘
+                    // 加密迁移：已是 dpapi-v1 则解密回内存使用；旧明文标记版本，稍后统一加密落盘
                     var needSeal = cfg.SecretsVaultVersion != SecretVaultVersionV1;
-                    UnsealSecrets(cfg);
+                    bool secretsLost = UnsealSecrets(cfg);
                     cfg.SecretsVaultVersion = SecretVaultVersionV1;
+
+                    // 有密文解不开时先把原文件另存一份，并跳过本次所有自动保存：
+                    // 此刻内存里的凭据全是 null，任何一次落盘都会把「在另一台机器上
+                    // 还能用」的密文永久覆盖掉。留一份原件，用户回到原机器仍可恢复。
+                    if (secretsLost) PreserveUnreadableConfig();
 
                     // 多账号迁移：旧单账号转成 Accounts[0]
                     if (TryMigrateLegacy(cfg))
@@ -155,19 +160,19 @@ public class AppConfig
                         cfg.LastCheckinDate = null;
                         if (string.IsNullOrEmpty(cfg.ActiveAccountId))
                             cfg.ActiveAccountId = cfg.Accounts[0].Id;
-                        cfg.Save();
+                        if (!secretsLost) cfg.Save();
                     }
                     // 迁移：优先复用官方客户端的真实 Aha 设备 ID，否则签到接口风控会返回 9074
                     var aha = TryResolveAhaDeviceId();
                     if (aha != null && aha != cfg.DeviceId)
                     {
                         cfg.DeviceId = aha;
-                        cfg.Save();
+                        if (!secretsLost) cfg.Save();
                     }
                     // 旧明文首次加载：立即加密落盘，避免明文长期留存
                     // 主题模式迁移：旧配置只有 DarkMode 布尔值，此处补齐三态 ThemeMode
                     bool themeMigrated = cfg.NormalizeTheme();
-                    if (needSeal || themeMigrated) cfg.Save();
+                    if ((needSeal || themeMigrated) && !secretsLost) cfg.Save();
                     return cfg;
                 }
             }
@@ -357,30 +362,67 @@ public class AppConfig
         };
     }
 
-    /// <summary>已加密配置加载后：解密敏感字段回内存（仅 dpapi-v1 生效；旧明文保持原样等迁移）。</summary>
-    private static void UnsealSecrets(AppConfig cfg)
+    /// <summary>
+    /// 密文解不开时把原配置另存一份，供用户回到原机器（或找回原用户账户）后恢复。
+    /// 已存在备份就不覆盖 —— 保留最早那份，避免后续被更差的状态冲掉。
+    /// </summary>
+    private static void PreserveUnreadableConfig()
     {
-        if (cfg.SecretsVaultVersion != SecretVaultVersionV1) return;
-        cfg.Token = DecryptSecret(cfg.Token);
-        cfg.Session = DecryptSecret(cfg.Session);
-        cfg.GitHubToken = DecryptSecret(cfg.GitHubToken);
-        // 本次 PR 追加的敏感字段：它们是新增字段，历史上从未以明文落盘，
+        try
+        {
+            if (!File.Exists(ConfigPath)) return;
+            var dir = Path.GetDirectoryName(ConfigPath)!;
+            if (Directory.GetFiles(dir, "config.json.unreadable-*").Length > 0) return;
+            var dst = Path.Combine(dir,
+                $"config.json.unreadable-{DateTime.Now:yyyyMMdd-HHmmss}");
+            File.Copy(ConfigPath, dst, overwrite: false);
+        }
+        catch { /* 备份失败不能阻塞启动 */ }
+    }
+
+    /// <summary>
+    /// 已加密配置加载后：解密敏感字段回内存（仅 dpapi-v1 生效；旧明文保持原样等迁移）。
+    /// 返回 true 表示**有密文解不开**（换了 Windows 用户、重装系统，或把 Windows 的
+    /// config.json 拷到了 macOS —— 两边加密机制不同且都只在本机可解）。
+    /// </summary>
+    private static bool UnsealSecrets(AppConfig cfg)
+    {
+        if (cfg.SecretsVaultVersion != SecretVaultVersionV1) return false;
+        bool lost = false;
+
+        // 解不开而原值又非空 → 记为丢失。此时内存里是 null，一旦落盘就把原本在
+        // 另一台机器上还能用的凭据永久抹掉，所以调用方要据此避免自动保存。
+        string? Dec(string? stored)
+        {
+            if (string.IsNullOrEmpty(stored)) return stored;
+            var v = DecryptSecret(stored);
+            if (v is null) lost = true;
+            return v;
+        }
+
+        cfg.Token = Dec(cfg.Token);
+        cfg.Session = Dec(cfg.Session);
+        cfg.GitHubToken = Dec(cfg.GitHubToken);
+        // 这些敏感字段是新增字段，历史上从未以明文落盘，
         // 因此不需要像 FeishuWebhook 那样做「解密失败保留原值」的兼容处理。
-        cfg.SmtpPassword = DecryptSecret(cfg.SmtpPassword);
-        cfg.WebhookUrl = DecryptSecret(cfg.WebhookUrl);
-        cfg.DingTalkWebhook = DecryptSecret(cfg.DingTalkWebhook);
-        cfg.DingTalkSecret = DecryptSecret(cfg.DingTalkSecret);
-        cfg.WeComWebhook = DecryptSecret(cfg.WeComWebhook);
-        cfg.TelegramBotToken = DecryptSecret(cfg.TelegramBotToken);
+        cfg.SmtpPassword = Dec(cfg.SmtpPassword);
+        cfg.WebhookUrl = Dec(cfg.WebhookUrl);
+        cfg.DingTalkWebhook = Dec(cfg.DingTalkWebhook);
+        cfg.DingTalkSecret = Dec(cfg.DingTalkSecret);
+        cfg.WeComWebhook = Dec(cfg.WeComWebhook);
+        cfg.TelegramBotToken = Dec(cfg.TelegramBotToken);
         var dev = DecryptSecret(cfg.DeviceId);
-        if (!string.IsNullOrEmpty(dev)) cfg.DeviceId = dev; // 解密失败（换机/换用户）保留原值，等重新登录刷新
+        if (!string.IsNullOrEmpty(dev)) cfg.DeviceId = dev; // 解密失败保留原值，等重新登录刷新
+        else if (!string.IsNullOrEmpty(cfg.DeviceId)) lost = true;
         foreach (var a in cfg.Accounts)
         {
-            a.Token = DecryptSecret(a.Token);
-            a.Session = DecryptSecret(a.Session);
+            a.Token = Dec(a.Token);
+            a.Session = Dec(a.Session);
             var aDev = DecryptSecret(a.DeviceId);
             if (!string.IsNullOrEmpty(aDev)) a.DeviceId = aDev;
+            else if (!string.IsNullOrEmpty(a.DeviceId)) lost = true;
         }
+        return lost;
     }
 
     /// <summary>

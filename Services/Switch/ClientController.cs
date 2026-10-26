@@ -73,7 +73,7 @@ public sealed class ClientController : IClientController
     private static string? MacBundleRoot(string exePath)
     {
         if (OperatingSystem.IsWindows() || string.IsNullOrEmpty(exePath)) return null;
-        var cut = exePath.IndexOf(".app/", StringComparison.OrdinalIgnoreCase);
+        var cut = exePath.LastIndexOf(".app/", StringComparison.OrdinalIgnoreCase);
         return cut > 0 ? exePath[..(cut + 4)] : null;
     }
 

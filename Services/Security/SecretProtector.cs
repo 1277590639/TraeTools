@@ -18,7 +18,8 @@ namespace TraeTools.Services.Security;
 /// </summary>
 public static class SecretProtector
 {
-    private const string AesPrefix = "aesg:";
+    /// <summary>非 Windows 密文的前缀。internal 以便安全审计按它区分密文与明文。</summary>
+    internal const string AesPrefix = "aesg:";
     private const int NonceSize = 12;
     private const int TagSize = 16;
     private const int KeySize = 32;

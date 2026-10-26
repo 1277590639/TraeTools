@@ -279,9 +279,10 @@ sealed class Program
                 Console.Error.WriteLine($"FAIL 1: 正常换包失败 rc={rc1} marker={ReadMarker(dst1) ?? "<无>"}");
                 ok = false;
             }
-            else if (Directory.Exists(Path.Combine(dst1, "TraeTools.app.~old")))
+            else if (Directory.Exists(Path.Combine(dst1, ".TraeTools.app.old"))
+                     || Directory.Exists(Path.Combine(dst1, ".TraeTools.app.new")))
             {
-                Console.Error.WriteLine("FAIL 1: 换包成功但残留 .~old 目录");
+                Console.Error.WriteLine("FAIL 1: 换包成功但残留 .old/.new 中间目录");
                 ok = false;
             }
             else Console.Error.WriteLine("OK 1: 正常换包，新版就位且无残留");
@@ -299,6 +300,35 @@ sealed class Program
                 ok = false;
             }
             else Console.Error.WriteLine("OK 2: 放入失败 → 旧版已回滚，用户仍可用");
+
+            // ---- 2b) 残局：TARGET 本来就不存在（上一次换包失败的后果）→ 必须能装好，不能砖 ----
+            var dst2b = Path.Combine(work, "dst2b");
+            var stage2b = Path.Combine(work, "stage2b");
+            Directory.CreateDirectory(dst2b);   // 没有 TraeTools.app
+            WriteBundle(Path.Combine(stage2b, "TraeTools.app"), "new");
+            var rc2b = RunSwapScript(stage2b, dst2b);
+            if (rc2b != 0 || ReadMarker(dst2b) != "new")
+            {
+                Console.Error.WriteLine($"FAIL 2b: 无旧版时换包失败 rc={rc2b} marker={ReadMarker(dst2b) ?? "<无>"}");
+                ok = false;
+            }
+            else Console.Error.WriteLine("OK 2b: TARGET 缺失的残局也能装好，不会变砖");
+
+            // ---- 2c) 目标目录不可写 → 旧版必须原样还在 ----
+            var dst2c = Path.Combine(work, "dst2c");
+            var stage2c = Path.Combine(work, "stage2c");
+            WriteBundle(Path.Combine(dst2c, "TraeTools.app"), "old");
+            WriteBundle(Path.Combine(stage2c, "TraeTools.app"), "new");
+            File.SetUnixFileMode(dst2c, UnixFileMode.UserRead | UnixFileMode.UserExecute);  // 去掉写权限
+            var rc2c = RunSwapScript(stage2c, dst2c);
+            var restored = ReadMarker(dst2c);
+            File.SetUnixFileMode(dst2c, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            if (rc2c == 0 || restored != "old")
+            {
+                Console.Error.WriteLine($"FAIL 2c: 目录不可写时旧版丢了 rc={rc2c} marker={restored ?? "<旧版丢了>"}");
+                ok = false;
+            }
+            else Console.Error.WriteLine("OK 2c: 目录不可写 → 旧版完好无损，脚本放弃");
 
             // ---- 3) 解包：真做一个 dmg，走 hdiutil 挂载 + ditto 复制 ----
             var bundleSrc = Path.Combine(work, "dmgsrc");
@@ -401,18 +431,23 @@ sealed class Program
     private static int RunSwapScript(string staging, string dst)
     {
         var sh = Path.Combine(Path.GetTempPath(), $"swaptest_{Guid.NewGuid():N}.sh");
-        File.WriteAllText(sh, TraeTools.Services.UpdaterService.BuildMacSwapScript(staging, dst, dryRun: true));
+        File.WriteAllText(sh, TraeTools.Services.UpdaterService.BuildMacSwapScript(dryRun: true));
         try
         {
+            // 路径走参数而非拼进脚本体，与生产调用方式保持一致
             using var p = Process.Start(new ProcessStartInfo("/bin/bash")
             {
-                Arguments = $"\"{sh}\"",
+                ArgumentList = { sh, staging, dst },
                 RedirectStandardError = true,
+                RedirectStandardOutput = true,
                 UseShellExecute = false,
             });
-            p?.WaitForExit(120_000);
-            if (p is not null) Console.Error.Write(p.StandardError.ReadToEnd());
-            return p?.ExitCode ?? -1;
+            if (p is null) return -1;
+            // 必须先读完再等退出：只等不退会把管道缓冲区写满，脚本和我们都卡住。
+            var err = p.StandardError.ReadToEnd();
+            p.WaitForExit(120_000);
+            if (!string.IsNullOrWhiteSpace(err)) Console.Error.Write(err);
+            return p.HasExited ? p.ExitCode : -1;
         }
         finally { try { File.Delete(sh); } catch { /* 忽略 */ } }
     }

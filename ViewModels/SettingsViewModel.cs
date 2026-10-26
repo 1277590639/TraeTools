@@ -194,7 +194,10 @@ public partial class SettingsViewModel : ViewModelBase
 
     public SettingsViewModel()
     {
-        // 从 AutoStartManager 读取开机自启状态
+        // 从 AutoStartManager 读取开机自启状态。
+        // 必须压住变更回调：赋值本身会触发 OnAutoStartEnabledChanged → SetEnabled，
+        // 不压的话每次打开设置页都会重写 LaunchAgent 并跑一遍 launchctl bootstrap。
+        _autoStartSyncSuppressed = true;
         try
         {
             AutoStartEnabled = AutoStartManager.IsEnabled();
@@ -202,6 +205,10 @@ public partial class SettingsViewModel : ViewModelBase
         catch
         {
             AutoStartEnabled = false;
+        }
+        finally
+        {
+            _autoStartSyncSuppressed = false;
         }
 
         // 从 AppConfig 读取飞书 webhook / 到点签到 / 最小化到托盘等设置
@@ -480,17 +487,18 @@ public partial class SettingsViewModel : ViewModelBase
     /// <summary>开关变动立即持久化（Windows 写注册表 / macOS 写 LaunchAgent），避免不开「保存设置」直接关窗导致状态丢失。#25</summary>
     partial void OnAutoStartEnabledChanged(bool value)
     {
-        if (_syncingAutoStart) return;
+        if (_autoStartSyncSuppressed) return;
         var err = AutoStartManager.SetEnabled(value);
         if (err is null) return;
         // 写失败必须把开关拨回去并说明原因：留着它就是个「显示已开启、实际没生效」的假开关。
         PushStatus = "开机自启未生效：" + err;
-        _syncingAutoStart = true;
+        _autoStartSyncSuppressed = true;
         AutoStartEnabled = !value;
-        _syncingAutoStart = false;
+        _autoStartSyncSuppressed = false;
     }
 
-    private bool _syncingAutoStart;
+    /// <summary>为 true 时 OnAutoStartEnabledChanged 不落盘：用于初始化读取和失败回滚两条路径。</summary>
+    private bool _autoStartSyncSuppressed;
 
     [RelayCommand]
     private void SaveSettings()

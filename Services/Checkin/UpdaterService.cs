@@ -51,7 +51,8 @@ public static class UpdaterService
     {
         if (string.IsNullOrEmpty(exePath)) return null;
         var full = exePath.Replace('\\', '/');
-        var cut = full.IndexOf(".app/", StringComparison.OrdinalIgnoreCase);
+        // 取最后一次：祖先目录也可能叫 xxx.app/，Index 会切错 bundle 根
+        var cut = full.LastIndexOf(".app/", StringComparison.OrdinalIgnoreCase);
         if (cut <= 0)
         {
             // 结尾正好是 .app 的情况（理论上不会，主程序在 Contents/MacOS 下）
@@ -72,10 +73,6 @@ public static class UpdaterService
         var bundle = BundleRootOf(exe);
         return bundle is null ? Path.GetDirectoryName(exe) : Path.GetDirectoryName(bundle);
     }
-
-    /// <summary>当前安装的可执行/启动目标名。</summary>
-    public static string CurrentLaunchTargetName =>
-        OperatingSystem.IsWindows() ? AppExeName : "TraeTools.app";
 
     // 经全局代理（NetProxy 缓存共享连接池；设置变更后 ResetCache 自动生效）
     private static HttpClient Http => TraeTools.Services.NetProxy.GetClient(TraeTools.Services.NetProxy.Global);
@@ -445,67 +442,104 @@ Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction Silent
     public static void ApplyMacInBackground(string stagingDir, string targetDir)
     {
         var sh = Path.Combine(Path.GetTempPath(), $"apply_update_{Guid.NewGuid():N}.sh");
-        File.WriteAllText(sh, BuildMacSwapScript(stagingDir, targetDir, dryRun: false), new UTF8Encoding(false));
+        File.WriteAllText(sh, BuildMacSwapScript(dryRun: false), new UTF8Encoding(false));
 
-        // 不用 UseShellExecute：脚本要能在父进程退出后继续活着，
-        // bash 不是 TraeTools，pgrep -x TraeTools 不会把它自己算成待等的旧进程。
+        // 路径一律走命令行参数，不拼进脚本体：拼进去的话路径里出现 $ 或反引号
+        // 会被 bash 二次展开，轻则脚本语法崩掉，重则执行意外命令。
+        // 也不用 UseShellExecute：脚本要能在父进程退出后继续活着。
         Process.Start(new ProcessStartInfo
         {
             FileName = "/bin/bash",
-            Arguments = $"\"{sh}\"",
+            ArgumentList = { sh, stagingDir, targetDir },
             UseShellExecute = false,
             CreateNoWindow = true,
         });
-        // 脚本自身由它最后一步 rm 掉暂存目录来收尾；这里不删，否则会被提前回收。
+        // 脚本自己负责收尾（删暂存目录与自身）；这里不删，否则会被提前回收。
     }
 
     /// <summary>
-    /// 生成 macOS 换包脚本。抽成独立方法是为了让 --update-swap-selftest 能跑**同一份**
-    /// 脚本 —— 更新器是唯一能把用户现有安装搞坏的功能，脚本逻辑不能只靠读代码验收。
+    /// 生成 macOS 换包脚本，用法：bash script.sh &lt;stagingDir&gt; &lt;targetDir&gt;。
+    /// 抽成独立方法是为了让 --update-swap-selftest 跑**同一份**脚本 —— 更新器是唯一
+    /// 能把用户现有安装直接搞坏的模块，脚本逻辑不能只靠读代码验收。
     /// dryRun 只跳过 open（拉起假 bundle），文件动作与生产完全一致。
+    ///
+    /// 关键取舍：先把新版复制到**目标目录所在卷**上的临时名，之后全是同卷 rename。
+    /// 跨卷 mv 会退化成「复制+删除」，中途失败会留下半个 TARGET 目录；而把旧版
+    /// rename 进一个已存在的目录会变成「旧版嵌在新版里面」而不是恢复。
+    /// 全程任何一步失败都不删旧版，直到新版确认就位才删。
     /// </summary>
-    internal static string BuildMacSwapScript(string stagingDir, string targetDir, bool dryRun)
+    internal static string BuildMacSwapScript(bool dryRun)
     {
         return $$"""
             #!/bin/bash
-            STAGE="{{stagingDir}}"
-            DST="{{targetDir}}"
+            set -u
+            STAGE="$1"
+            DST="$2"
             APP="TraeTools.app"
             TARGET="$DST/$APP"
-            OLD="$DST/$APP.~old"
+            NEW="$DST/.TraeTools.app.new"
+            OLD="$DST/.TraeTools.app.old"
             DRY={{(dryRun ? 1 : 0)}}
 
             relaunch() { [ "$DRY" = "1" ] || open "$1" 2>/dev/null; }
 
             # 等旧进程退出，最多 60s。判据用 pgrep 而不是"文件能不能写"：
             # macOS 上正在运行的 bundle 依然可被 rename，用可写性会误判成已退出。
+            gone=0
             for i in $(seq 1 240); do
-              pgrep -x TraeTools >/dev/null 2>&1 || break
+              pgrep -x TraeTools >/dev/null 2>&1 || { gone=1; break; }
               sleep 0.25
             done
+            if [ "$gone" != "1" ]; then
+              # 旧进程还活着就动包，等于在运行中的 bundle 上改文件。宁可放弃更新。
+              echo "swap: 旧进程 60s 内未退出，放弃换包（未改动任何文件）" >&2
+              exit 1
+            fi
 
-            rm -rf "$OLD"
-            if [ -d "$TARGET" ] && ! mv "$TARGET" "$OLD" 2>/dev/null; then
-              # 旧版挪不动 = 安装目录不可写。原样重启旧版，不能把新版丢在半路。
-              echo "swap: 无法移动旧版，目录不可写" >&2
+            # 1) 先把新版复制到目标卷。此步完全不碰 TARGET，失败零代价。
+            rm -rf "$NEW"
+            if [ ! -d "$STAGE/$APP" ]; then
+              # 和「目录不可写」分开报：混成一条会把人往权限方向引，实际是包没解出来。
+              echo "swap: 暂存目录里没有 $APP（解包未完成），未改动现有安装" >&2
+              relaunch "$TARGET"
+              exit 1
+            fi
+            if ! cp -a "$STAGE/$APP" "$NEW" 2>/dev/null; then
+              echo "swap: 无法写入 $DST（权限或空间不足），未改动现有安装" >&2
               relaunch "$TARGET"
               exit 1
             fi
 
-            if mv "$STAGE/$APP" "$TARGET" 2>/dev/null; then
+            # 2) 旧版挪开（也可能本来就没有：上一次换包失败的残局）
+            moved_old=0
+            if [ -d "$TARGET" ]; then
+              rm -rf "$OLD"
+              if mv "$TARGET" "$OLD" 2>/dev/null; then moved_old=1
+              else
+                echo "swap: 旧版挪动失败，未改动现有安装" >&2
+                rm -rf "$NEW"; relaunch "$TARGET"; exit 1
+              fi
+            fi
+
+            # 3) 新版就位（同卷 rename，原子）
+            if mv "$NEW" "$TARGET" 2>/dev/null; then
               rm -rf "$OLD" "$STAGE"
               echo "swap: ok" >&2
+              rm -f "$0"
               relaunch "$TARGET"
               exit 0
             fi
 
-            # 新版没放进去：回滚旧版，绝不允许出现「两个都没有」
+            # 4) 新版没放进去 → 尽力回滚旧版
             echo "swap: 新版放入失败，回滚旧版" >&2
-            if [ -d "$OLD" ]; then
-              mv "$OLD" "$TARGET" 2>/dev/null
+            rm -rf "$NEW"
+            if [ "$moved_old" = "1" ] && mv "$OLD" "$TARGET" 2>/dev/null; then
               relaunch "$TARGET"
+            elif [ "$moved_old" = "1" ]; then
+              # 连回滚都失败：绝不删旧版，把残局留在原地供人工恢复
+              echo "swap: 回滚也失败！旧版仍在 $OLD，请手动改回 $TARGET" >&2
             fi
+            rm -f "$0"
             exit 1
             """;
     }
-}
