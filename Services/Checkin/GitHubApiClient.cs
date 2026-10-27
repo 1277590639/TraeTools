@@ -437,53 +437,86 @@ public class GitHubApiClient
         try
         {
             var path = $"/repos/{login}/{SourceRepo}/contents/{WorkflowPath}";
-            using var get = await SendApiAsync(HttpMethod.Get, path + "?ref=main", token);
-            if (!get.IsSuccessStatusCode)
+            var cronRegex = new System.Text.RegularExpressions.Regex(@"-\s+cron:\s*""([^""]*)""");
+
+            // 读取 fork 中的 checkin.yml（sha + 文本）；失败时写入 LastError
+            async Task<(string Sha, string Yml)?> ReadFileAsync()
             {
-                LastError = $"读取 checkin.yml 失败：HTTP {(int)get.StatusCode}";
-                return false;
-            }
-            var getJson = await get.Content.ReadAsStringAsync();
-            string sha, contentB64;
-            using (var doc = System.Text.Json.JsonDocument.Parse(getJson))
-            {
+                using var get = await SendApiAsync(HttpMethod.Get, path + "?ref=main", token);
+                if (!get.IsSuccessStatusCode)
+                {
+                    LastError = $"读取 checkin.yml 失败：HTTP {(int)get.StatusCode}";
+                    return null;
+                }
+                var getJson = await get.Content.ReadAsStringAsync();
+                using var doc = System.Text.Json.JsonDocument.Parse(getJson);
                 if (!doc.RootElement.TryGetProperty("sha", out var shaEl) ||
                     !doc.RootElement.TryGetProperty("content", out var cEl) ||
                     shaEl.ValueKind != JsonValueKind.String || cEl.ValueKind != JsonValueKind.String)
                 {
                     LastError = "checkin.yml 响应缺少 sha/content";
+                    return null;
+                }
+                try
+                {
+                    var text = Encoding.UTF8.GetString(Convert.FromBase64String(cEl.GetString()!.Replace("\n", "")));
+                    return (shaEl.GetString()!, text);
+                }
+                catch (Exception ex)
+                {
+                    LastError = "checkin.yml 内容解码失败：" + ex.Message;
+                    return null;
+                }
+            }
+
+            // 写入后必须回读确认：GitHub 偶尔返回 2xx 但文件并未真正更新，不能直接报「已生效」
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                var file = await ReadFileAsync();
+                if (file == null) return false;
+
+                var current = cronRegex.Match(file.Value.Yml);
+                if (!current.Success)
+                {
+                    LastError = "checkin.yml 中未找到 cron 行，无法更新时间";
                     return false;
                 }
-                sha = shaEl.GetString()!;
-                contentB64 = cEl.GetString()!.Replace("\n", "");
+                if (current.Groups[1].Value == cron)
+                {
+                    LastError = "";   // 内容本就一致，视为成功（幂等）
+                    return true;
+                }
+
+                int idx = current.Groups[1].Index;
+                var newYml = file.Value.Yml[..idx] + cron + file.Value.Yml[(idx + current.Groups[1].Length)..];
+                var payload = AppJson.Serialize(new GitHubContentUpdatePayload
+                {
+                    Message = "chore: 调整云端签到时间至 " + cron + " (UTC)",
+                    Content = Convert.ToBase64String(Encoding.UTF8.GetBytes(newYml)),
+                    Sha = file.Value.Sha,
+                    Branch = "main",
+                });
+                using var put = await SendApiAsync(HttpMethod.Put, path, token, payload);
+                if (!put.IsSuccessStatusCode)
+                {
+                    LastError = $"写入 checkin.yml 失败：HTTP {(int)put.StatusCode}";
+                    return false;
+                }
+
+                var after = await ReadFileAsync();
+                if (after != null)
+                {
+                    var verify = cronRegex.Match(after.Value.Yml);
+                    if (verify.Success && verify.Groups[1].Value == cron)
+                    {
+                        LastError = "";
+                        return true;
+                    }
+                }
+                if (attempt == 0) await Task.Delay(1500);   // sha 可能被并发提交刷新，重读后重试一次
             }
 
-            string yml;
-            try { yml = Encoding.UTF8.GetString(Convert.FromBase64String(contentB64)); }
-            catch (Exception ex) { LastError = "checkin.yml 内容解码失败：" + ex.Message; return false; }
-
-            var regex = new System.Text.RegularExpressions.Regex(@"(-\s+cron:\s*"")[^""]*("")");
-            if (!regex.IsMatch(yml))
-            {
-                LastError = "checkin.yml 中未找到 cron 行，无法更新时间";
-                return false;
-            }
-            var newYml = regex.Replace(yml, $"${{1}}{cron}${{2}}", 1);
-            if (newYml == yml)
-            {
-                LastError = "";   // 内容本就一致，视为成功（幂等）
-                return true;
-            }
-
-            var payload = AppJson.Serialize(new GitHubContentUpdatePayload
-            {
-                Message = "chore: 调整云端签到时间至 " + cron + " (UTC)",
-                Content = Convert.ToBase64String(Encoding.UTF8.GetBytes(newYml)),
-                Sha = sha,
-            });
-            using var put = await SendApiAsync(HttpMethod.Put, path, token, payload);
-            if (put.IsSuccessStatusCode) return true;
-            LastError = $"写入 checkin.yml 失败：HTTP {(int)put.StatusCode}";
+            LastError = "写入 checkin.yml 后回读内容未更新，云端定时可能仍是旧时间，请重试";
             return false;
         }
         catch (Exception ex)

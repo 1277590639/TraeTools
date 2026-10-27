@@ -135,6 +135,8 @@ public partial class CloudViewModel : ViewModelBase
                     : $"已部署完成（1 个账号），云端每天北京时间 {CloudCheckinTime} 自动签到";
                 ActionButtonText = "重新部署";
                 LastRun = await TryGetLastRunAsync(token, login);
+                // 账号重新登录/增删后，把最新 Session 自动同步到云端 Secret，避免云端一直用旧值直到过期
+                await TrySyncCloudSecretsAsync(cfg, token, login);
             }
             else
             {
@@ -161,6 +163,8 @@ public partial class CloudViewModel : ViewModelBase
                 "failure" => "失败",
                 _ => run.Status ?? "运行中"
             };
+            if (run.Conclusion == "failure")
+                AppendLog("注意：云端最近一次签到失败，常见原因是 Session 已过期或命中风控。请重新登录 Trae 后再点「重新部署」，或到 Actions 查看日志。");
             return $"{run.CreatedAt?.Replace("T", " ").Substring(0, 16) ?? "—"}（{conclusion}）";
         }
         catch { return "—"; }
@@ -377,45 +381,7 @@ public partial class CloudViewModel : ViewModelBase
             }
 
             // 写凭证（含清理多余 + 飞书 webhook）；重建 fork 后会自动再次调用
-            if (!await WriteSecretsAsync()) { HandleDeployFailure(); return; }
-
-            // 局部函数：把所有账号的 Session/DeviceId（含清理多余）与飞书 Webhook 写入 fork 的 Actions Secret
-            async Task<bool> WriteSecretsAsync()
-            {
-                for (int i = 0; i < enabled.Count; i++)
-                {
-                    var acc = enabled[i];
-                    int idx = i + 1;
-                    var sName = GitHubApiClient.SessionSecretNameFor(idx);
-                    var dName = GitHubApiClient.DeviceSecretNameFor(idx);
-
-                    AppendLog($"正在写入 {sName} secret…");
-                    if (!await _ghApi.SetSecretAsync(token, login, sName, acc.Session ?? "")) return false;
-                    AppendLog($"{sName} 写入成功");
-
-                    AppendLog($"正在写入 {dName} secret…");
-                    if (!await _ghApi.SetSecretAsync(token, login, dName, acc.DeviceId ?? "")) return false;
-                    AppendLog($"{dName} 写入成功");
-                }
-
-                // 清理本次减少后遗留的多余 secret，避免云端误签已停用账号
-                for (int n = enabled.Count + 1; n <= CloudAccountLimit; n++)
-                {
-                    var stale = GitHubApiClient.SessionSecretNameFor(n);
-                    if (!await _ghApi.DeleteSecretAsync(token, login, stale)) return false;
-                    var staleD = GitHubApiClient.DeviceSecretNameFor(n);
-                    if (!await _ghApi.DeleteSecretAsync(token, login, staleD)) return false;
-                    AppendLog($"已清理多余 {stale} secret");
-                }
-
-                if (!string.IsNullOrEmpty(cfg.FeishuWebhook))
-                {
-                    AppendLog("正在写入 FEISHU_WEBHOOK secret…");
-                    if (!await _ghApi.SetSecretAsync(token, login, GitHubApiClient.FeishuWebhookSecretName, cfg.FeishuWebhook)) return false;
-                    AppendLog("FEISHU_WEBHOOK 写入成功");
-                }
-                return true;
-            }
+            if (!await WriteSecretsToCloudAsync(token, login, enabled)) { HandleDeployFailure(); return; }
 
                         Steps[1].Status = "ok"; Steps[2].Status = "progress";
             AppendLog("正在查找 checkin workflow…");
@@ -454,7 +420,7 @@ public partial class CloudViewModel : ViewModelBase
                     await Task.Delay(3000);   // 等 GitHub 完成删除，避免立即 re-fork 报冲突
                     if (!await _ghApi.ForkAsync(token, login)) { HandleDeployFailure(); return; }
                     AppendLog("fork 已重建，重新写入凭证…");
-                    if (!await WriteSecretsAsync()) { HandleDeployFailure(); return; }
+                    if (!await WriteSecretsToCloudAsync(token, login, enabled)) { HandleDeployFailure(); return; }
 
                     AppendLog("等待重建后 workflow 登记…");
                     for (int i = 0; i < 12 && wfId < 0; i++)
@@ -477,9 +443,13 @@ public partial class CloudViewModel : ViewModelBase
             AppendLog("workflow 已启用");
 
             // 应用自定义签到时间（北京时间 → UTC cron，改写 fork 的 checkin.yml）
-            await ApplyCronInternalAsync(token, login);
+            bool cronApplied = await ApplyCronInternalAsync(token, login);
 
             AppendLog("正在触发一次验证运行…");
+            // 先记下当前最新一次运行的编号，后面只认「本次 dispatch 之后新产生的 run」，
+            // 否则可能把上一次（甚至前几天的）运行结论当成这次部署的结果。
+            var previousRun = await _ghApi.GetLatestRunAsync(token, login);
+            long previousRunNumber = previousRun?.RunNumber ?? 0;
             if (!await _ghApi.DispatchWorkflowAsync(token, login, wfId)) { HandleDeployFailure(); return; }
 
             AppendLog("等待运行结果（最长约 100 秒）…");
@@ -487,14 +457,21 @@ public partial class CloudViewModel : ViewModelBase
             for (int i = 0; i < 20; i++)
             {
                 await Task.Delay(5000);
-                conclusion = await _ghApi.GetLatestRunConclusionAsync(token, login);
+                var latestRun = await _ghApi.GetLatestRunAsync(token, login);
+                if (latestRun == null || latestRun.RunNumber <= previousRunNumber) continue;
+                conclusion = latestRun.Conclusion;
                 if (!string.IsNullOrEmpty(conclusion)) break;
             }
 
             if (conclusion == "success")
             {
-                AppendLog($"部署成功！{enabled.Count} 个账号已就绪，GitHub 将每天北京时间 {CloudCheckinTime} 自动签到。");
-                StateText = $"已部署完成（{enabled.Count} 个账号），云端每天 {CloudCheckinTime} 自动签到";
+                var timeNote = cronApplied
+                    ? $"GitHub 将每天北京时间 {CloudCheckinTime} 自动签到。"
+                    : "但云端定时时间未更新（仍为仓库原有时间），请稍后重试「应用到云端」。";
+                AppendLog($"部署成功！{enabled.Count} 个账号已就绪，{timeNote}");
+                StateText = cronApplied
+                    ? $"已部署完成（{enabled.Count} 个账号），云端每天 {CloudCheckinTime} 自动签到"
+                    : $"已部署完成（{enabled.Count} 个账号），云端定时未更新";
                 ActionButtonText = "重新部署";
             }
             else if (string.IsNullOrEmpty(conclusion))
@@ -554,10 +531,80 @@ public partial class CloudViewModel : ViewModelBase
     }
 
     /// <summary>
-    /// 应用自定义签到时间（北京时间 HH:mm → UTC cron，改写 fork 的 checkin.yml）。
-    /// 部署流程与「应用到云端」按钮共用；失败不阻断部署（沿用源仓库默认 08:00）。
+    /// 把启用账号的 Session/DeviceId（含清理多余）与飞书 Webhook 写入 fork 的 Actions Secret。
+    /// 部署流程与「凭据自动同步」共用；成功后记录凭据指纹，避免重复同步。
     /// </summary>
-    private async Task ApplyCronInternalAsync(string token, string login)
+    private async Task<bool> WriteSecretsToCloudAsync(string token, string login, IReadOnlyList<TraeAccount> enabled)
+    {
+        var cfg = MainViewModel.AppConfig;
+        if (cfg == null) return false;
+
+        for (int i = 0; i < enabled.Count; i++)
+        {
+            var acc = enabled[i];
+            int idx = i + 1;
+            var sName = GitHubApiClient.SessionSecretNameFor(idx);
+            var dName = GitHubApiClient.DeviceSecretNameFor(idx);
+
+            AppendLog($"正在写入 {sName} secret…");
+            if (!await _ghApi.SetSecretAsync(token, login, sName, acc.Session ?? "")) return false;
+            AppendLog($"{sName} 写入成功");
+
+            AppendLog($"正在写入 {dName} secret…");
+            if (!await _ghApi.SetSecretAsync(token, login, dName, acc.DeviceId ?? "")) return false;
+            AppendLog($"{dName} 写入成功");
+        }
+
+        // 清理本次减少后遗留的多余 secret，避免云端误签已停用账号
+        for (int n = enabled.Count + 1; n <= CloudAccountLimit; n++)
+        {
+            var stale = GitHubApiClient.SessionSecretNameFor(n);
+            if (!await _ghApi.DeleteSecretAsync(token, login, stale)) return false;
+            var staleD = GitHubApiClient.DeviceSecretNameFor(n);
+            if (!await _ghApi.DeleteSecretAsync(token, login, staleD)) return false;
+            AppendLog($"已清理多余 {stale} secret");
+        }
+
+        if (!string.IsNullOrEmpty(cfg.FeishuWebhook))
+        {
+            AppendLog("正在写入 FEISHU_WEBHOOK secret…");
+            if (!await _ghApi.SetSecretAsync(token, login, GitHubApiClient.FeishuWebhookSecretName, cfg.FeishuWebhook)) return false;
+            AppendLog("FEISHU_WEBHOOK 写入成功");
+        }
+
+        cfg.CloudSecretsHash = ComputeSecretsHash(enabled);
+        try { cfg.Save(); } catch { /* 忽略 */ }
+        return true;
+    }
+
+    /// <summary>启用账号凭据（Id/Session/DeviceId）的 SHA-256 指纹，用于判断是否需要重新同步 Secret。</summary>
+    private static string ComputeSecretsHash(IReadOnlyList<TraeAccount> enabled)
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var a in enabled)
+            sb.Append(a.Id).Append('|').Append(a.Session).Append('|').Append(a.DeviceId).Append('\n');
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(sb.ToString())));
+    }
+
+    /// <summary>Session 更新或账号增删后，自动把新凭据同步到云端 Secret，避免云端长期沿用旧 Session 直到过期失败。</summary>
+    private async Task TrySyncCloudSecretsAsync(AppConfig cfg, string token, string login)
+    {
+        var enabled = cfg.Accounts.Where(a => a.Enabled && !string.IsNullOrEmpty(a.Session)).ToList();
+        if (enabled.Count == 0 || enabled.Count > CloudAccountLimit) return;
+        if (ComputeSecretsHash(enabled) == cfg.CloudSecretsHash) return;
+
+        AppendLog("检测到账号凭据与云端不一致，正在自动同步 Secret…");
+        if (await WriteSecretsToCloudAsync(token, login, enabled))
+            AppendLog("账号凭据已自动同步到云端");
+        else
+            AppendLog("自动同步云端凭据失败：" + _ghApi.LastError + "（可稍后重新部署）");
+    }
+
+    /// <summary>
+    /// 应用自定义签到时间（北京时间 HH:mm → UTC cron，改写 fork 的 checkin.yml）。
+    /// 部署流程与「应用到云端」按钮共用；失败不阻断部署（云端继续沿用仓库原有定时）。
+    /// </summary>
+    private async Task<bool> ApplyCronInternalAsync(string token, string login)
     {
         var cron = GitHubApiClient.CronFromBeijingTime(CloudCheckinTime);
         if (cron == null)
@@ -576,11 +623,10 @@ public partial class CloudViewModel : ViewModelBase
                 try { cfg.Save(); } catch { /* 忽略 */ }
             }
             AppendLog($"云端签到时间已生效：每天北京时间 {CloudCheckinTime}（GitHub 定时调度通常有 ±15 分钟左右延迟，属正常现象）");
+            return true;
         }
-        else
-        {
-            AppendLog("设置签到时间失败：" + _ghApi.LastError + "（部署继续，云端沿用默认 08:00）");
-        }
+        AppendLog("设置签到时间失败：" + _ghApi.LastError + "（部署继续，云端定时沿用仓库原有设置）");
+        return false;
     }
 
     /// <summary>「应用到云端」按钮：只更新云端签到时间，无需重新部署。</summary>
