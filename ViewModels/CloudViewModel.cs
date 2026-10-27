@@ -589,8 +589,11 @@ public partial class CloudViewModel : ViewModelBase
     /// <summary>Session 更新或账号增删后，自动把新凭据同步到云端 Secret，避免云端长期沿用旧 Session 直到过期失败。</summary>
     private async Task TrySyncCloudSecretsAsync(AppConfig cfg, string token, string login)
     {
-        var enabled = cfg.Accounts.Where(a => a.Enabled && !string.IsNullOrEmpty(a.Session)).ToList();
+        // 与部署保持一致：若某个启用账号还没登录（缺少 Session），整体跳过同步，
+        // 否则会把后面的账号顶到前面的序号，导致云端签到串号。
+        var enabled = cfg.Accounts.Where(a => a.Enabled).ToList();
         if (enabled.Count == 0 || enabled.Count > CloudAccountLimit) return;
+        if (enabled.Any(a => string.IsNullOrEmpty(a.Session))) return;
         if (ComputeSecretsHash(enabled) == cfg.CloudSecretsHash) return;
 
         AppendLog("检测到账号凭据与云端不一致，正在自动同步 Secret…");
