@@ -51,10 +51,11 @@ internal sealed class GitHubWorkflowDispatchPayload
     [JsonPropertyName("ref")] public string Ref { get; set; } = "main";
 }
 
-/// <summary>Contents API 更新文件体：{ message, content, sha }。</summary>
+/// <summary>Contents API 更新文件体：{ message, content, sha, branch }。</summary>
 internal sealed class GitHubContentUpdatePayload
 {
     [JsonPropertyName("message")] public string Message { get; set; } = "";
     [JsonPropertyName("content")] public string Content { get; set; } = "";
     [JsonPropertyName("sha")] public string Sha { get; set; } = "";
+    [JsonPropertyName("branch")] public string Branch { get; set; } = "main";
 }

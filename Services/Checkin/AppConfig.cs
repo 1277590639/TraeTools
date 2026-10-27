@@ -59,6 +59,12 @@ public class AppConfig
     /// </summary>
     public string CloudCheckinTime { get; set; } = "08:00";
 
+    /// <summary>
+    /// 上次写入 GitHub Actions Secret 的账号凭据指纹（Session/DeviceId 的 SHA-256，不落明文）。
+    /// 打开云端页面时若指纹与当前账号不一致，会自动把新凭据同步到云端，避免 Session 更新后云端仍用旧值。
+    /// </summary>
+    public string CloudSecretsHash { get; set; } = "";
+
     /// <summary>是否启用网络代理（签到/用量/GitHub 接口与登录浏览器统一走此代理）。</summary>
     public bool ProxyEnabled { get; set; }
 
@@ -311,6 +317,7 @@ public class AppConfig
             StarAskedAfterDeploy = StarAskedAfterDeploy,
             MinimizeToTray = MinimizeToTray,
             CloudCheckinTime = CloudCheckinTime,
+            CloudSecretsHash = CloudSecretsHash,
             ProxyEnabled = ProxyEnabled,
             ProxyServer = ProxyServer,
             // ===== 本次 PR 追加项 =====
